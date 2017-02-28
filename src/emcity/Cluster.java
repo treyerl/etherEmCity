@@ -1,4 +1,5 @@
 package emcity;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
@@ -16,27 +17,21 @@ import com.vividsolutions.jts.geom.impl.CoordinateArraySequence;
 import com.vividsolutions.jts.operation.union.CascadedPolygonUnion;
 
 import ch.fhnw.ether.scene.mesh.IMesh;
-import ch.fhnw.ether.scene.mesh.IMesh.Flag;
-import ch.fhnw.ether.scene.mesh.IMesh.Queue;
 import ch.fhnw.ether.scene.mesh.MeshUtilities;
 import ch.fhnw.ether.scene.mesh.material.ColorMaterial;
 import ch.fhnw.ether.scene.mesh.material.LineMaterial;
 import ch.fhnw.util.color.RGBA;
 import ch.fhnw.util.math.Mat4;
 import ch.fhnw.util.math.Vec3;
+import emcity.EmCity.REPRESENTATION;
+import emcity.EmCity.TYPE;
+import emcity.EmCity.Typed;
 
-public class Cluster implements Agent.Type, Colonizeable {
+public class Cluster implements Typed, Colonizeable {
 	public final static GeometryFactory gf = new GeometryFactory();
-	public static Cluster create(int type) {
-		switch(type){
-		case Agent.PRIVATE: return new Private();
-		case Agent.CULTURE: return new Culture();
-		case Agent.SQUARE: return new Square();
-		default: return new Cluster();
-		}
-	}
 	
 	public static enum Colors {
+		// make sure order is in sync with emcity.TYPE
 		CULTURE(new RGBA(0xD2E87EFF)),
 		SQUARE(new RGBA(0xA2B93AFF)),
 		PRIVATE(new RGBA(0xFFC67CFF));
@@ -45,8 +40,8 @@ public class Cluster implements Agent.Type, Colonizeable {
 			this.color = color;
 		}
 		
-		public static RGBA getColor(int type){
-			return values()[type].color;
+		public static RGBA getColor(TYPE type){
+			return values()[type.ordinal()].color;
 		}
 
 		public static String getName(int type) {
@@ -54,61 +49,40 @@ public class Cluster implements Agent.Type, Colonizeable {
 		}
 	}
 	
-	static public class Culture extends Cluster implements Agent.Culture{
-		Culture() {
-			color = Colors.CULTURE.color;
-		}
-	}
-	static public class Square extends Cluster implements Agent.Square{
-		Square() {
-			color = Colors.SQUARE.color;
-		}
-	}
-	
-	public static class Private extends Cluster implements Agent.Private{
-		Private() {
-			color = Colors.PRIVATE.color;
-		}
-
-		void agentInteraction(Agent agent) {
-			super.agentInteraction(agent);
-		}
-	}
-	
-	public static List<IMesh> createMeshPerType(List<Cluster> clusters, BiFunction<Integer, Stream<Cluster>,IMesh> perType){
-		List<IMesh> allCenters = new LinkedList<>();
-		allCenters.add(perType.apply(0, clusters.stream().filter(c -> c instanceof Culture)));
-		allCenters.add(perType.apply(1, clusters.stream().filter(c -> c instanceof Square)));
-		allCenters.add(perType.apply(2, clusters.stream().filter(c -> c instanceof Private)));
+	public static List<IMesh> createMeshPerType(List<Cluster> clusters, BiFunction<TYPE, Stream<Cluster>,IMesh> perType){
+		List<IMesh> allCenters = new ArrayList<>();
+		for (TYPE t: TYPE.values())
+			allCenters.add(perType.apply(t, clusters.stream().filter(c -> c.type.equals(t))));
 		return allCenters;
 	}
 	
-	public static List<IMesh> createMeshListPerType(List<Cluster> clusters, BiFunction<Integer, Stream<Cluster>,List<IMesh>> perType){
-		List<IMesh> allCenters = new LinkedList<>();
-		allCenters.addAll(perType.apply(0, clusters.stream().filter(c -> c instanceof Culture)));
-		allCenters.addAll(perType.apply(1, clusters.stream().filter(c -> c instanceof Square)));
-		allCenters.addAll(perType.apply(2, clusters.stream().filter(c -> c instanceof Private)));
+	public static List<IMesh> createMeshListPerType(List<Cluster> clusters, BiFunction<TYPE, Stream<Cluster>,List<IMesh>> perType){
+		List<IMesh> allCenters = new ArrayList<>();
+		for (TYPE t: TYPE.values())
+			allCenters.addAll(perType.apply(t, clusters.stream().filter(c -> c.type.equals(t))));
 		return allCenters;
 	}
 	
 	
 	public static List<IMesh> createCenterPoints(List<Cluster> clusters){
-		return createMeshPerType(clusters, (i, typedClusters) -> {
+		return createMeshPerType(clusters, (t, typedClusters) -> {
 			IMesh mesh = MeshUtilities.createPoints(typedClusters
 					.map(c -> c.attractor)
-					.collect(Collectors.toList()), Colors.getColor(i), 5);
-			mesh.setName(Colors.getName(i));
+					.collect(Collectors.toList()), t.getColor(), 5);
+			mesh.setName(t.name());
+			mesh.getAttributes().put(REPRESENTATION.key(), REPRESENTATION.values()[t.ordinal()]);
 			return mesh;
 		});
 	}
 	
 	public static List<IMesh> createOutlines(List<Cluster> clusters){
-		return createMeshListPerType(clusters, (i, typedClusters) -> {
+		return createMeshListPerType(clusters, (type, typedClusters) -> {
 			return MeshUtilities.mergeMeshes(typedClusters
 					.map(cl -> cl.getCapacityMesh())
 					.collect(Collectors.toList()) ).stream()
 					.map(m -> {
-						m.setName(Colors.getName(i));
+						m.setName(type.name());
+						m.getAttributes().put(REPRESENTATION.key(), REPRESENTATION.values()[type.ordinal()]);
 						return m;
 					})
 					.collect(Collectors.toList());
@@ -116,19 +90,28 @@ public class Cluster implements Agent.Type, Colonizeable {
 	}
 	
 	List<Cell> cells;
+	TYPE type;
 	private Vec3 attractor;
-	private boolean attraction;
-	int capacity, maxHeight = 0, occupation, luciID = 0;
-	float maxAgentDistance = 0;
-	RGBA color = RGBA.BLACK;
-	int[] center = new int[2];
+	private int capacity, maxHeight = 0, occupation, luciID = 0;
+	private float maxAgentDistance = 0;
+	private int[] center = new int[2];
+	private IMesh disk;
 
 	// TODO cluster_type = existing structure or extension
 	// TODO activity_type
 
-	Cluster() {
-		this.occupation = 0;
+	Cluster(TYPE type) {
+		this.type = type;
+		occupation = 0;
 		cells = new LinkedList<>();
+	}
+	
+	public boolean is(TYPE t){
+		return type.equals(t);
+	}
+	
+	public TYPE getType(){
+		return type;
 	}
 	
 	public void addCell(Cell c){
@@ -139,15 +122,6 @@ public class Cluster implements Agent.Type, Colonizeable {
 		return cells.size();
 	}
 	
-	public Cluster setAttraction(boolean b){
-		attraction = b;
-		return this;
-	}
-	
-	public boolean isAttracting(){
-		return attraction;
-	}
-	
 	public void setCenter(int x, int y){
 		center[0] = x;
 		center[1] = y;
@@ -156,19 +130,20 @@ public class Cluster implements Agent.Type, Colonizeable {
 	public void setPoints(List<int[]> points, Map<Long, Cell> allCells){
 		int x = center[0];
 		int y = center[1];
-		int type = getType();
 		cells.clear();
 		for (int[] point : points) {
 			int capacity = point[2];
 			int size = 10;
-			if (type == Agent.SQUARE){
+			if (type.equals(TYPE.SQUARE)){
 				capacity = 1;
 			}
-			Cell c = Cell.create(type, x + point[0], y + point[1], capacity, size, this); 
+			Cell c = new Cell(type, x + point[0], y + point[1], capacity, size, this);
 			if (allCells.putIfAbsent(c.getLocationKey(), c) == null){
 				addCell(c);
 			}
 		}
+		// for reloading typologies
+		colonize(occupation);
 	}
 	
 	/** set Attraction and clusterCapacity;
@@ -192,7 +167,6 @@ public class Cluster implements Agent.Type, Colonizeable {
 
 		// centroid calculation - attraction point
 		this.attractor = new Vec3(sum_x / cells.size(), sum_y / cells.size(), 0);
-		this.attraction = true;
 	}
 	
 	public IMesh getCapacityMesh(){
@@ -205,7 +179,7 @@ public class Cluster implements Agent.Type, Colonizeable {
 				lines.add(pair.first);
 				lines.add(pair.second);
 		});
-		return MeshUtilities.createLines(lines, new LineMaterial(RGBA.BLACK).setWidth(1), Queue.DEPTH, Flag.DONT_CAST_SHADOW);
+		return MeshUtilities.createLines(lines, new LineMaterial(RGBA.BLACK).setWidth(type.represent().getLineWidth()));
 	}
 	
 	public Vec3 getAttractionPoint(){
@@ -261,34 +235,21 @@ public class Cluster implements Agent.Type, Colonizeable {
 		return l;
 	}
 
-	void agentInteraction(Agent agent) {
-
-		// if cluster is not fully used yet
+	boolean receive(Agent agent, Cell c) {
 		if (!isFull()) {
 			// colonize cluster's cells
-			int rest_participants = colonize(agent.participants);
-
-			// println("cluster_"+ id +": colonization (rest of agents: " + rest
-			// +")");
-
-			if (rest_participants > 0) {
-				// println("cluster_"+ id +": agent splitting (new agent value
-				// is "+rest+")");
-				// agent -= rest;
+			int remainingParticipants = colonize(agent.getParticipants());
+			if (remainingParticipants > 0) {
+				// now the cluster is full
 				this.occupation = capacity;
-				this.attraction = false;
-				agent.participants = rest_participants;
-
+				agent.setParticipants(remainingParticipants);
 			} else {
 				// increase cluster occupation
-				this.occupation += agent.participants;
-				agent.participants = 0;
-				agent.is_active = false;
-
+				this.occupation += agent.getParticipants();
+				return true;
 			}
-		} else {
-			agent.collision();
 		}
+		return false;
 	}
 
 	public int colonize(int colonize_by) {
@@ -310,7 +271,6 @@ public class Cluster implements Agent.Type, Colonizeable {
 			cells.get(i).empty();
 		}
 		this.occupation = 0;
-		this.attraction = true;
 	}
 
 	public void fill() {
@@ -320,7 +280,6 @@ public class Cluster implements Agent.Type, Colonizeable {
 			cells.get(i).fill();
 		}
 		this.occupation = capacity;
-		this.attraction = false;
 
 		// occupancy ratio (if capcaity is full - ratio 1:1 - remove attraction)
 		// if existing structure > and capacity is fulfilled > create new
@@ -344,8 +303,13 @@ public class Cluster implements Agent.Type, Colonizeable {
 	}
 	
 	public IMesh getMaxAgentDistanceCircle(){
-		IMesh disk = MeshUtilities.createDisk(new ColorMaterial(new RGBA(0xE8C365FF)), 9);
+		if (disk == null)
+			disk = MeshUtilities.createDisk(new ColorMaterial(new RGBA(0xE8C365FF)), 9);
 		disk.setTransform(Mat4.scale(maxAgentDistance));
 		return disk;
+	}
+
+	public void setOccupation(int o) {
+		occupation = o;
 	}
 }

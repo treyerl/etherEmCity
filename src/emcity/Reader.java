@@ -14,7 +14,8 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import ch.fhnw.util.math.Vec3;
-import ch.fhnw.util.math.geometry.LineString;
+import ch.fhnw.util.math.geometry.LineStrip;
+import emcity.EmCity.TYPE;
 
 public class Reader{
 	private int i = 0;
@@ -60,12 +61,12 @@ public class Reader{
 	 * @param map EMap to which cells and clusters should be added
 	 * @param type int - one of the static constants defined in Agent [PRIVATE, CULTURE, SQUARE]
 	 */
-	void cluster(Stream<String> lines, int cellSize, Map<Long, Cell> cells, List<Cluster> clusters, int type){
+	void cluster(Stream<String> lines, int cellSize, Map<Long, Cell> cells, List<Cluster> clusters, TYPE type){
 		lines.forEach(line -> {
-			Cluster cluster = Cluster.create(type);
+			Cluster cluster = new Cluster(type);
 			String[] n = line.split(" ");
 			for (int j = 0; j < n.length - 1; j += 3) {
-				Cell c = Cell.create(type, i(n[j]), i(n[j+1]), i(n[j+2]), cellSize, cluster);
+				Cell c = new Cell(type, i(n[j]), i(n[j+1]), i(n[j+2]), cellSize, cluster);
 				cluster.addCell(c);
 				cells.put(c.getLocationKey(), c);
 			}
@@ -122,7 +123,7 @@ public class Reader{
 	 * @param close boolean that indicates whether the splines should be closed
 	 * @return List&lt;Spline3D&gt;
 	 */
-	List<LineString> lineStrings(List<Vec3> points, Stream<String> indexStream, boolean close){
+	List<LineStrip> lineStrings(List<Vec3> points, Stream<String> indexStream, boolean close){
 		System.out.println(points.size());
 		Iterator<Vec3> pit = points.iterator();
 		i = 0;
@@ -135,7 +136,7 @@ public class Reader{
 					pts.add(pts.getFirst());
 				}
 			}
-			return new LineString(pts);
+			return new LineStrip(pts);
 		}).collect(Collectors.toList());
 	}
 	
@@ -143,8 +144,8 @@ public class Reader{
 	 * @param strstr Stream&lt;String&gt;
 	 * @return Spline3D
 	 */
-	LineString ghSpline(Stream<String> strstr){
-		return new LineString(strstr
+	LineStrip ghSpline(Stream<String> strstr){
+		return new LineStrip(strstr
 				.map(s -> s.split(" "))
 				.map(s -> new Vec3(Float.parseFloat(s[0]), -Float.parseFloat(s[1]), 0))
 				.collect(Collectors.toCollection(LinkedList::new)));

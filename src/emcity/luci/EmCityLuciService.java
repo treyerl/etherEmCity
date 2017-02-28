@@ -1,4 +1,5 @@
 package emcity.luci;
+
 import java.util.LinkedList;
 import java.util.List;
 import java.util.function.Consumer;
@@ -56,7 +57,7 @@ public class EmCityLuciService extends LcRemoteService {
 				
 				Reader r = new Reader();
 				List<Cluster> updatedClusters = new LinkedList<>();
-				List<Integer> deletedIDs = emc.updateTypologies(r.lines(a.getByteBuffer()), updatedClusters);
+				List<Integer> deletedIDs = emc.getController().updateTypologies(r.lines(a.getByteBuffer()), updatedClusters);
 				uploadClusters(updatedClusters, deletedIDs);
 				return new Message(new JSONObject().put("result", new JSONObject()
 						.put("updatedClusters", updatedClusters.size())
@@ -87,7 +88,7 @@ public class EmCityLuciService extends LcRemoteService {
 		EmCityLuciService em = new EmCityLuciService(asp);
 		em.setEmCity((new EmCity()).setLuci(em));
 		new Thread(em).start();
-		em.connect(asp.getHostname(), asp.getPort());
+		//em.connect(asp.getHostname(), asp.getPort());
 		
     }
 	
@@ -180,7 +181,7 @@ public class EmCityLuciService extends LcRemoteService {
 	}
 	
 	public void publishCamera(ICamera cam){
-		JSONObject jCam = peasyCamToJSONObject(cam);
+		JSONObject jCam = camToJSONObject(cam);
 		if (!didReceiveCameraID){
 			sendAndReceive(new Message(new JSONObject().put("run", "scenario.camera.List")), 
 				new ResponseHandler() {
@@ -215,8 +216,7 @@ public class EmCityLuciService extends LcRemoteService {
 		}
 	}
 	
-	public JSONObject peasyCamToJSONObject(ICamera cam){
-		
+	public JSONObject camToJSONObject(ICamera cam){
 		Vec3 lookAt = cam.getTarget();
 		Vec3 camUp = cam.getUp();
 		Vec3 pos = cam.getPosition();

@@ -10,9 +10,9 @@ import ch.fhnw.ether.scene.mesh.IMesh.Queue;
 import ch.fhnw.ether.scene.mesh.geometry.DefaultGeometry;
 import ch.fhnw.ether.scene.mesh.geometry.IGeometry;
 import ch.fhnw.ether.scene.mesh.material.LineMaterial;
-import ch.fhnw.util.color.RGBA;
 import ch.fhnw.util.math.Vec3;
-import ch.fhnw.util.math.geometry.LineString;
+import ch.fhnw.util.math.geometry.LineStrip;
+import emcity.EmCity.REPRESENTATION;
 
 /**A class holding a list of toxi.geom.Spline3D which it is able to draw to a PApplet canvas
  * by connecting their respective points with a PApplet.line()
@@ -21,12 +21,12 @@ import ch.fhnw.util.math.geometry.LineString;
  */
 public class MultiLineString {
 	
-	List<LineString> lineStrings;
+	List<LineStrip> lineStrings;
 	
 	/**Set the splines
 	 * @param lineStrings List&lt;LineString&gt;
 	 */
-	public void setLineStrings(List<LineString> lineStrings){
+	public void setLineStrings(List<LineStrip> lineStrings){
 		this.lineStrings = lineStrings;
 	}
 	
@@ -35,17 +35,16 @@ public class MultiLineString {
 	 */
 	public List<Vec3> getLines(){
 		List<Vec3> lines = new LinkedList<>();
-		for (LineString ls: lineStrings) 
+		for (LineStrip ls: lineStrings) 
 			lines.addAll(ls.getLines());
 		return lines;
 	}
 	
-	public LineMaterial getLineMaterial(){
-		return new LineMaterial(RGBA.BLACK).setWidth(1);
-	}
-	
-	public IMesh getMesh(){
+	public IMesh getMesh(REPRESENTATION r){
 		IGeometry g = DefaultGeometry.createV(Vec3.toArray(getLines()));
-		return new DefaultMesh(Primitive.LINES, getLineMaterial(), g, Queue.DEPTH, Flag.DONT_CAST_SHADOW);
+		IMesh m = new DefaultMesh(Primitive.LINES, new LineMaterial(r.getColor()).setWidth(r.getLineWidth()), g, Queue.TRANSPARENCY, Flag.DONT_CAST_SHADOW, Flag.DONT_CULL_FACE);
+		m.getAttributes().put(REPRESENTATION.key(), r);
+		m.setName(r.name());
+		return m;
 	}
 }

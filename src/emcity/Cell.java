@@ -7,64 +7,54 @@ import java.util.function.Consumer;
 
 import ch.fhnw.ether.scene.IScene;
 import ch.fhnw.ether.scene.mesh.IMesh;
-import ch.fhnw.ether.scene.mesh.MeshUtilities;
 import ch.fhnw.ether.scene.mesh.IMesh.Flag;
 import ch.fhnw.ether.scene.mesh.IMesh.Queue;
+import ch.fhnw.ether.scene.mesh.MeshUtilities;
+import ch.fhnw.ether.scene.mesh.geometry.DefaultGeometry;
+import ch.fhnw.ether.scene.mesh.geometry.IGeometry;
 import ch.fhnw.ether.scene.mesh.material.ColorMaterial;
 import ch.fhnw.util.Pair;
 import ch.fhnw.util.color.RGBA;
 import ch.fhnw.util.math.Mat4;
 import ch.fhnw.util.math.Vec3;
 import ch.fhnw.util.math.geometry.BoundingBox;
+import emcity.EmCity.REPRESENTATION;
+import emcity.EmCity.TYPE;
+import emcity.EmCity.Typed;
 
 
-class Cell implements Agent.Type, Colonizeable{
-	
-	static Cell create(int type, int x, int y, int capacity, int size, Cluster c){
-		switch(type){
-		case Agent.PRIVATE: return new Private(x,y,capacity,size, c);
-		case Agent.CULTURE: return new Culture(x,y,capacity,size, c);
-		case Agent.SQUARE: return new Square(x,y,capacity,size, c);
-		default: return new Cell(x,y,capacity, size, c);
-		}
-	}
+class Cell implements Typed, Colonizeable{
 	
 	public static long xy2long(float x, float y){
 		return (((long) ((int)x * 0.1)) << 32) + ((int) (y * 0.1));
 	}
 	
-	static class Culture extends Cell implements Agent.Culture{
-		Culture(int x, int y, int capacity, int size, Cluster c) {
-			super(x, y, capacity, size, c);
-			activity = new RGBA(0xD2E87EFF);
-		}
-	}
-	static class Square extends Cell implements Agent.Square {
-		Square(int x, int y, int capacity, int size, Cluster c) {
-			super(x, y, capacity, size, c);
-			activity = new RGBA(0xA2B93Aff);
-		}
-	}
-	static class Private extends Cell implements Agent.Private{
-		Private(int x, int y, int capacity, int size, Cluster c) {
-			super(x, y, capacity, size, c);
-			activity = RGBA.LIGHT_GRAY;
-		}
-	}
-
-	private int x, y, size, capacity, occupation;
-	RGBA activity = RGBA.RED;
-	Cluster cluster;
-	IMesh capacityCube, occupationCube;
+	public static IGeometry unitCube = DefaultGeometry.createV(MeshUtilities.UNIT_CUBE_TRIANGLES);
+	private final int x, y;
+	private int size, capacity, occupation;
+	private RGBA activity = RGBA.RED;
+	private Cluster cluster;
+	private IMesh capacityCube, occupationCube;
 	private Consumer<IScene> update;
+	private TYPE type;
 
-	Cell(int x, int y, int capacity, int size, Cluster c) {
+	Cell(TYPE type, int x, int y, int capacity, int size, Cluster c) {
 		this.x = x;
 		this.y = y;
 		this.size = size;
 		this.capacity = capacity;
 		this.occupation = 0;
 		this.cluster = c;
+		this.activity = type.getColor();
+		this.type = type;
+	}
+	
+	public boolean is(TYPE t){
+		return type.equals(t);
+	}
+	
+	public TYPE getType(){
+		return type;
 	}
 	
 	public long getLocationKey() {
@@ -75,7 +65,7 @@ class Cell implements Agent.Type, Colonizeable{
 		if (capacityCube == null){
 			float s2 = ((float) size) / 2;
 			List<Vec3> lines = boxDiagonalOutline(new Vec3(-s2,-s2,0), new Vec3(s2, s2, capacity));
-			IMesh m = MeshUtilities.createLines(lines, 1);
+			IMesh m = MeshUtilities.createLines(lines, EmCity.LINEWIDTH);
 			m.setPosition(new Vec3(x,y,0));
 			if (store) capacityCube = m;
 			else return m;
@@ -150,7 +140,15 @@ class Cell implements Agent.Type, Colonizeable{
 			new Pair<>(maxLeft, minFwd)
 		);
 	}
-
+	
+	public IMesh getOccupationCube(){
+		return occupationCube;
+	}
+	
+	public void removeOccupationCube(){
+		occupationCube = null;
+	}
+	
 	// @return: remaining agents
 	public int colonize(int newAgents){
 		if (isFull())
@@ -159,23 +157,34 @@ class Cell implements Agent.Type, Colonizeable{
 		int taken = Math.min(available, newAgents);
 		occupation += taken;
 		if (occupation > 0){
+			
 			update = (IScene scene) -> {
 				if (occupationCube == null){
 					occupationCube = MeshUtilities.createCube(new ColorMaterial(activity), Queue.DEPTH, EnumSet.of(Flag.DONT_CAST_SHADOW));
+					// needs more computation in the end
+//					occupationCube = new DefaultMesh(Primitive.TRIANGLES, new ColorMaterial(activity), unitCube, Queue.DEPTH, EnumSet.of(Flag.DONT_CAST_SHADOW, Flag.SHADER_TRANSFORMATION));
+					occupationCube.getAttributes().put(REPRESENTATION.key(), REPRESENTATION.values()[type.ordinal()]);
 					scene.add3DObject(occupationCube);
 				}
-				occupationCube.setPosition(new Vec3(x,y,(float)occupation/2));
-				occupationCube.setTransform(Mat4.scale(size, size, occupation));
+				occupationCube.setTransform(getOccupationTransformation());
 			};
 		}
 		return newAgents - taken;
 	}
 	
-	public void update(IScene scene){
+	private Mat4 getOccupationTransformation(){
+		Vec3 pos = new Vec3(x,y,(float)occupation/2);
+		Vec3 scale = new Vec3(size, size, occupation);
+		return Mat4.multiply(Mat4.translate(pos), Mat4.scale(scale));
+	}
+	
+	public boolean update(IScene scene){
 		if (update != null) {
 			update.accept(scene);
 			update = null;
+			return true;
 		}
+		return false;
 	}
 	
 	public boolean isFull() {
@@ -212,6 +221,10 @@ class Cell implements Agent.Type, Colonizeable{
 	public int getY() {
 		return y;
 	}
+	
+	public Vec3 getPosition(){
+		return new Vec3(x,y,0);
+	}
 
 	public int getSize() {
 		return size;
@@ -224,10 +237,12 @@ class Cell implements Agent.Type, Colonizeable{
 	public int getOccupation() {
 		return occupation;
 	}
+	public void setOccupation(int o){
+		occupation = o;
+		if (occupationCube != null)
+			occupationCube.setVisible(false);
+	}
 	public Cluster getCluster(){
 		return cluster;
 	}
-	
-	
-	
 }

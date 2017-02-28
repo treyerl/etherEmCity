@@ -33,6 +33,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -47,7 +48,6 @@ import org.eclipse.swt.widgets.Display;
 import org.lwjgl.glfw.GLFW;
 
 import ch.fhnw.ether.controller.DefaultController;
-import ch.fhnw.ether.controller.IController;
 import ch.fhnw.ether.controller.event.IKeyEvent;
 import ch.fhnw.ether.controller.tool.NavigationTool;
 import ch.fhnw.ether.controller.tool.PickTool;
@@ -63,7 +63,6 @@ import ch.fhnw.ether.scene.mesh.IMesh.Queue;
 import ch.fhnw.ether.scene.mesh.MeshUtilities;
 import ch.fhnw.ether.scene.mesh.geometry.DefaultGeometry;
 import ch.fhnw.ether.scene.mesh.geometry.IGeometry;
-import ch.fhnw.ether.scene.mesh.material.ColorMaterial;
 import ch.fhnw.ether.scene.mesh.material.IMaterial;
 import ch.fhnw.ether.scene.mesh.material.LineMaterial;
 import ch.fhnw.ether.scene.mesh.material.PointMaterial;
@@ -76,11 +75,15 @@ import ch.fhnw.util.color.RGBA;
 import ch.fhnw.util.math.MathUtilities;
 import ch.fhnw.util.math.Vec2;
 import ch.fhnw.util.math.Vec3;
-import ch.fhnw.util.math.geometry.LineString;
+import ch.fhnw.util.math.geometry.LineStrip;
 import emcity.luci.EmCityLuciService;
-import plethora.core.Ple_Agent;
 
 public class EmCity {
+	public static interface Typed {
+		boolean is(TYPE type);
+		TYPE getType();
+	}
+	
 	public class EmCityController extends DefaultController {
 
 		@Override
@@ -122,55 +125,267 @@ public class EmCity {
 			});
 		}
 		
-		public void resetScene() {
+		private void removeGeneratedGeometry(){
 			run(time -> {
 				IScene scene = getScene();
-				scene.remove3DObjects(generatedOutlines);
-				scene.remove3DObjects(generatedCells.stream().map(c -> c.occupationCube).collect(Collectors.toList()));
-				scene.remove3DObjects(trails);
-				scene.remove3DObjects(agentPoints);
+				synchronized(generatedOutlines){
+					synchronized(allMeshes){
+						allMeshes.removeAll(generatedOutlines);
+					}
+					scene.remove3DObjects(generatedOutlines);
+					generatedOutlines.clear();
+				}
+				synchronized(generatedCells){
+					synchronized(cells){
+						generatedCells.stream().forEach(c -> {
+							if (c.getOccupationCube() != null) 
+								scene.remove3DObject(c.getOccupationCube());
+							cells.remove(c.getLocationKey());
+						});
+					}
+					generatedCells.clear();
+				}
+				synchronized(generatedClusters){
+					synchronized(clusters){
+						clusters.removeAll(generatedClusters);
+					}
+					generatedClusters.clear();
+				}
+				
+				synchronized(addedCenterPoints){
+					scene.remove3DObjects(addedCenterPoints);
+					addedCenterPoints.clear();
+				}
 			});
 		}
 		
-		public void resetClusters(){
-			resetScene();
-			generatedCells.stream().forEach(cell -> {
-				clusters.removeAll(cells.values().stream().map(c -> c.cluster).collect(Collectors.toSet()));
+		public void resetScene() {
+			removeGeneratedGeometry();
+			run(time -> {
+				IScene scene = getScene();
+				synchronized(trails){
+					scene.remove3DObjects(trails);
+					trails.clear();
+				}
+				synchronized(cells){
+					cells.values().stream().forEach(c -> {
+						c.setOccupation(0);
+					});
+				}
+				synchronized(clusters){
+					clusters.stream().forEach(c -> {
+						c.setOccupation(0);
+					});
+				}
+				synchronized(agentPoints){
+					scene.remove3DObjects(agentPoints);
+					agentPoints = null;
+				}
+				synchronized(mAntennas){
+					scene.remove3DObject(mAntennas);
+					mAntennas = null;
+				}
+				synchronized(agents){
+					agents.forEach(a -> {
+						if (a.getAttractionCircle() != null) 
+							scene.remove3DObject(a.getAttractionCircle());
+					});
+					agents.clear();
+				}
+				
+				addAgents();
 			});
-			generatedCells.clear();
+		}
+		
+		public void geometryVisibility(REPRESENTATION rep){
+			controller.run(time -> {
+				allMeshes.stream().filter(m -> rep.equals(m.getAttributes()
+						.get(REPRESENTATION.key()))).forEach(m -> m.setVisible(params.isShowing(rep)));
+				TYPE t = rep.asType();
+				if (t != null){
+					cells.values().stream().filter(c -> c.is(t)).forEach(c ->{
+						IMesh cube = c.getOccupationCube();
+						if (cube != null) cube.setVisible(params.isShowing(rep));
+					});
+				}
+			});
+		}
+		public void showAttractionCircle(boolean att) {
+			agents.forEach(agent -> agent.isShowingAttractionCircle(att));
+		}
+		public void toggleVolumes(int index) {
+			addVolumesForAllAgents[index] = !addVolumesForAllAgents[index];
+		}
+		
+		public void addAgents(){
+			synchronized(agents){
+				final Vec2 bounce = new Vec2(sceneWidth, sceneHeight);
+				iteratePopulations((i,size) -> {
+					Agent agent = new Agent(EmCity.this, Agent.initLocations[i], params, bounce, pheromones);
+					agent.setVelocity(new Vec3(MathUtilities.random(-1, 0.5f), MathUtilities.random(-1, 0.5f), 0));
+					agent.isShowingAttractionCircle(params.isShowingAttractionCircle());
+					// TODO - the velocity can be changed and can contribute to the weights as well
+					agents.add(agent);
+				});
+			}
+		}
+		
+		public void updateTypologies() throws IOException{
+			updateTypologies(read.lines("data/typologies_test.txt"), new LinkedList<>());
+		}
+		
+		public List<Integer> updateTypologies(Stream<String> lines, List<Cluster> updatedClusters){
+			final List<Integer> deletedIDs = new LinkedList<>();
+			i=0;
+			final boolean[] needToRemoveOutlines = new boolean[]{false};
+			final List<IMesh> newOutlines = new LinkedList<>();
+			List<Cluster> newClusters = new LinkedList<>();
+			synchronized(cells){
+				synchronized(typologies){
+					lines.forEachOrdered(s -> {
+						if (i<typologies.size()){
+							Typology t = typologies.get(i++);
+							if (t.setPoints(read.typologyPointsFromString(s), cells, updatedClusters)){
+								needToRemoveOutlines[0] = true;
+							}
+							newClusters.addAll(t.usingMe);
+						} else {
+							typologies.add(new Typology(read.typologyPointsFromString(s)));
+						}
+					});
+				}
+			}
+
+			synchronized(clusters){
+				synchronized(cells){
+					while (typologies.size() > i){
+						needToRemoveOutlines[0] = true;
+						typologies.remove(i);
+					}
+				}
+			}
+
+			if (needToRemoveOutlines[0]){
+				removeGeneratedGeometry();
+				newOutlines.addAll(Cluster.createOutlines(newClusters));
+				List<IMesh> centerPoints = Cluster.createCenterPoints(newClusters);
+				controller.run(time -> {
+					synchronized(generatedOutlines){
+						generatedOutlines.addAll(newOutlines);
+						controller.getScene().add3DObjects(newOutlines);
+					}
+					synchronized(addedCenterPoints){
+						controller.getScene().add3DObjects(centerPoints);
+						addedCenterPoints.addAll(centerPoints);
+					}
+				});
+			}
+			updateStats();
+			return deletedIDs;
+		}
+		public void moveOrigins() {
+			System.out.println("TODO: move origins");
 		}
 	}
-	private ArrayList<Ple_Agent> agents;
-	private List<Typology> typologies;
-	private Map<Long, Cell> cells;
-	private List<Cluster> clusters;
+	
+	public static enum REPRESENTATION {
+		CULTURE("1", new RGBA(0xD2E87EFF), 0.5f), 
+		SQUARE("2", new RGBA(0xA2B93AFF), 0.5f), 
+		PRIVATE("3", RGBA.LIGHT_GRAY, 0.5f), 
+		BUILDINGS2D("B", RGBA.LIGHT_GRAY, 0.5f), 
+		ROADS("W", RGBA.DARK_GRAY, 0.5f);
+		private String keyStroke;
+		private RGBA color;
+		private float lineWidth;
+		REPRESENTATION(String stroke, RGBA color, float lineWidth){
+			this.keyStroke = stroke;
+			this.color = color;
+			this.lineWidth = lineWidth;
+		}
+		String getKeyStroke(){
+			return keyStroke;
+		}
+		public TYPE asType(){
+			if (ordinal() < TYPE.values().length)
+				return TYPE.values()[ordinal()];
+			return null;
+		}
+		public RGBA getColor(){
+			return color;
+		}
+		public float getLineWidth(){
+			return lineWidth;
+		}
+		public static String key(){
+			return "REPR";
+		}
+	}
+	
+	public static enum TYPE {
+		CULTURE(1), SQUARE(1), PRIVATE(2);
+		private int weight;
+		private static Random rand = new Random();
+		TYPE(int weight){
+			this.weight = weight;
+		}
+		public RGBA getColor(){
+			return represent().getColor();
+		}
+		public static int count(){
+			return values().length;
+		}
+		private static int allWeights(){
+			int aw = 0;
+			for (TYPE t: values()) aw += t.weight;
+			return aw;
+		}
+		public static TYPE getRandom(){
+			int r = rand.nextInt(allWeights());
+			int w = 0;
+			for (TYPE t: values()){
+				w += t.weight;
+				if (r <= w) return t;
+			}
+			return mostProbableType();
+		}
+		public static TYPE mostProbableType(){
+			TYPE t = values()[0];
+			for (TYPE tt: values()) 
+				if (tt.weight > t.weight) 
+					t = tt;	
+			return t;
+		}
+		public REPRESENTATION represent(){
+			return REPRESENTATION.values()[ordinal()];
+		}
+	}
+	
+	public static final float LINEWIDTH = 0.5f;
+	public static final RGBA ATTRACTION_COLOR = new RGBA(0xE8C36599);
+
+	private final List<Agent> agents;
+	private final List<Typology> typologies;
+	private final LinkedList<IMesh> trails; 
+	private final List<Cell> generatedCells;
+	private final List<IMesh> allMeshes, generatedOutlines, addedCenterPoints;
+	private final List<Cluster> clusters, generatedClusters;
+	private final Map<Long, Cell> cells;
 	
 	private Reader read;
-	private LineString linestring;
-	private Buildings2D buildings;
-	private Roads roads;
+	private LineStrip linestring;
+	private MultiLineString buildings, roads;
 	private int i = 0;
 	private Parameters params;
 	
 	private EmCityLuciService luci;
 	private EmCityController controller;
-	
-	// int pop = 10; //80 agents = 10*8
-	boolean[] addVolume = new boolean[Agent.numCategories];
-	boolean[] addVolumesForAllAgents = new boolean[Agent.numCategories];
-	boolean[] drawBuildings = new boolean[Agent.numCategories];
+	private boolean[] addVolumesForAllAgents = new boolean[TYPE.count()];
 	static final int cell_size_b = 10;
 	static final int cell_size_park = 10;
-
-	boolean drawExistingBuildings = true;
-	boolean reset_button = false;
-	boolean DRAW_ROADS = true;
-
-	int res = 0;
-	int iterT = 1;
-	float distant;
-	private int windowWidth = 1200, windowHeight = 900;
-	private int sceneWidth = 3290, sceneHeight = 3016;
+	
+	private int windowWidth = 1200, windowHeight = 900,
+				sceneWidth = 3290, sceneHeight = 3016,
+				windowX = 100, windowY = 0;
 	private Timer timer;
 	private int simulationFPS = 25;
 	private int frameDuration = 1000 / simulationFPS;
@@ -180,32 +395,37 @@ public class EmCity {
 	private PheromoneCanvas pheromones;
 	private ParametersView pv;
 	private Random r = new Random();
-	private ColorMaterial red = new ColorMaterial(RGBA.RED);
+	private LineMaterial red = new LineMaterial(RGBA.RED).setWidth(0.5f);
 	
-	private LinkedList<IMesh> trails;
-	private List<Cell> generatedCells;
-	private List<IMesh> generatedOutlines;
+	// TODO: IMutableMesh trails
+	
 	
 	public EmCity() {
-		// fullScreen();
+		
 		timer = new Timer();
 		params = new Parameters();
 		trails = new LinkedList<>();
-		generatedCells = new LinkedList<>();
-		generatedOutlines = new LinkedList<>();
-		Arrays.fill(drawBuildings, true);
+		generatedCells = new ArrayList<>();
+		allMeshes = new ArrayList<>();
+		generatedOutlines = new ArrayList<>();
+		addedCenterPoints = new ArrayList<>();
+		agents = new ArrayList<>();
+		cells = new HashMap<>();
+		clusters = new ArrayList<>();
+		typologies = new ArrayList<>();
+		generatedClusters = new ArrayList<>();
 		
 		Platform.get().init();
 		controller = new EmCityController();
 		controller.run(time -> {
-//			Config c = new Config(ViewType.INTERACTIVE_VIEW, 32, RGBA.GRAY, ViewFlag.SMOOTH_LINES);
-			Config c = new Config(ViewType.INTERACTIVE_VIEW, 0, RGBA.GRAY);
-			IView view = new DefaultView(controller, 100, 100, windowWidth, windowHeight, c, "EtherEmCity");
+			Config c = new Config(ViewType.INTERACTIVE_VIEW, 32, RGBA.GRAY, IView.ViewFlag.SMOOTH_LINES);
+//			Config c = new Config(ViewType.INTERACTIVE_VIEW, 0, RGBA.GRAY);
+			IView view = new DefaultView(controller, windowX, windowY, windowWidth, windowHeight, c, "EtherEmCity");
 			IScene scene = new EmScene(controller);
 			controller.setScene(scene);
 			controller.setTool(getTool());
 			Display.getDefault().asyncExec(() -> {
-				pv = new ParametersView(params, windowWidth+100, 100, controller);
+				pv = new ParametersView(params, windowWidth+windowX, windowY, controller);
 				pv.show(Display.getDefault());
 			});
 			
@@ -219,7 +439,6 @@ public class EmCity {
 			
 			// TrailBuffer
 			pheromones = new PheromoneCanvas(sceneWidth, sceneHeight);
-//			trailBuffer.update();
 			
 			startSimulationThread();
 		});
@@ -229,7 +448,7 @@ public class EmCity {
 	
 	private void startSimulationThread(){
 		new Thread(() -> {
-			setupAgents();
+			controller.addAgents();
 			loadGeometry();
 			controller.run(time -> {
 				drawGeoemtry();
@@ -258,16 +477,12 @@ public class EmCity {
 		};
 	}
 	
-	public IController getController(){
+	public EmCityController getController(){
 		return controller;
 	}
 	
 	public Map<Long, Cell> getCells(){
 		return cells;
-	}
-	
-	public List<Cluster> getClusters(){
-		return clusters;
 	}
 	
 	public Parameters getParameters(){
@@ -281,16 +496,14 @@ public class EmCity {
 
 	private void loadGeometry(){
 		read = new Reader();
-		roads = new Roads();
-		cells = new HashMap<>();
-		clusters = new ArrayList<>();
-		buildings = new Buildings2D();
-		typologies = new ArrayList<>();
+		roads = new MultiLineString();
+		buildings = new MultiLineString();
+		
 		try {
-			read.cluster(read.lines("data/clusters.txt"), cell_size_b, cells, clusters, Agent.PRIVATE);
-			read.cluster(read.lines("data/culture_clusters.txt"), cell_size_b, cells, clusters, Agent.CULTURE);
-			read.cluster(read.lines("data/square_clusters.txt"), cell_size_park, cells, clusters, Agent.SQUARE);
-			typologies.addAll(read.typologies(read.lines("data/typologies_test.txt")));
+			read.cluster(read.lines("data/clusters.txt"), cell_size_b, cells, clusters, TYPE.PRIVATE);
+			read.cluster(read.lines("data/culture_clusters.txt"), cell_size_b, cells, clusters, TYPE.CULTURE);
+			read.cluster(read.lines("data/square_clusters.txt"), cell_size_park, cells, clusters, TYPE.SQUARE);
+			typologies.addAll(read.typologies(read.lines("data/typologies.txt")));
 			linestring = read.ghSpline(read.lines("data/path_following_line.txt"));
 			buildings.setLineStrings(read.lineStrings(
 					read.points(read.lines("data/budovy_body.txt")), read.lines("data/budovy_zoznam.txt"), true));
@@ -316,13 +529,13 @@ public class EmCity {
 			
 			b.add(new Vec3(-x2,  y2, 0));
 			b.add(new Vec3(-x2, -y2, 0));
-			IGeometry g = DefaultGeometry.createV(Vec3.toArray(b));
-			sceneBoundary = new DefaultMesh(Primitive.LINES, new LineMaterial(RGBA.BLACK), g, Queue.DEPTH, Flag.DONT_CAST_SHADOW);
+			sceneBoundary = MeshUtilities.createLines(b, 1);
 		}
 		return sceneBoundary;
 	}
 	
 	private void drawGeoemtry() {
+		IMesh mesh;
 		IScene scene = controller.getScene();
 		// boundary rectangle
 		scene.add3DObject(getSceneBoundary());
@@ -335,18 +548,29 @@ public class EmCity {
 		scene.add3DObject(Agent.getOrigins(20));
 
 		// building footprints of existing buildings
-		if (params.isDraw2DBuildings()){
-			scene.add3DObjects(buildings.getMesh());
-		}
+		mesh = buildings.getMesh(REPRESENTATION.BUILDINGS2D);
+		scene.add3DObjects(mesh);
+		allMeshes.add(mesh);
 		
 		// roads
-		scene.add3DObject(roads.getMesh());
+		mesh = roads.getMesh(REPRESENTATION.ROADS);
+		scene.add3DObject(mesh);
+		allMeshes.add(mesh);
 		
 		// clusters capacity meshes
-		scene.add3DObjects(Cluster.createOutlines(clusters));
+		List<IMesh> outlines = Cluster.createOutlines(clusters);
+		scene.add3DObjects(outlines);
+		allMeshes.addAll(outlines);
 		
 		// cluster center points
-		scene.add3DObjects(Cluster.createCenterPoints(clusters));
+		List<IMesh> points = Cluster.createCenterPoints(clusters);
+		scene.add3DObjects(points);
+		allMeshes.addAll(points);
+		
+		for (REPRESENTATION re: REPRESENTATION.values()){
+			allMeshes.stream().filter(g -> re.equals(g.getAttributes()
+					.get(REPRESENTATION.key()))).forEach(g -> g.setVisible(params.isShowing(re)));
+		}
 	}
 	
 	private void iteratePopulations(BiConsumer<Integer,Integer> f){
@@ -358,39 +582,75 @@ public class EmCity {
 		}
 	}
 	
-	private void setupAgents(){
-		agents = new ArrayList<>();
-		final Vec2 bounce = new Vec2(sceneWidth, sceneHeight);
-		iteratePopulations((i,size) -> {
-			Agent agent = new Agent(this, Agent.initLocations[i], params, bounce, pheromones);
-			agent.setVelocity(new Vec3(MathUtilities.random(-1, 0.5f), MathUtilities.random(-1, 0.5f), 0));
-			// TODO - the velocity can be changed and can contribute to the weights as well
-			agents.add(agent);
-		});
-	}
-	
-	public void tickAgents() {	
-		clusters.stream().forEach(cl -> cl.resetMaxAgentDistance());
+	public void tickAgents() {
+		synchronized(clusters){
+			clusters.stream().forEach(cl -> cl.resetMaxAgentDistance());
+		}
 		List<Vec3> antennas = new LinkedList<>();
-		List<Cluster> newVolumes = new ArrayList<>();
+		List<Cluster> newClusters = new LinkedList<>();
 		List<Vec3> trailSteps = new LinkedList<>();
+		final List<IMesh> remove = new LinkedList<>();
+		boolean update = false;
 		synchronized(agents){
-			for (Ple_Agent pAgent : agents) {
-				Agent agent = (Agent) pAgent;
-				if (!agent.is_active)
-					continue;
-				int newType = agent.tick(agents, antennas, linestring);
-				for (int i = 1; i < Agent.numCategories; i++){
-					if (newType == i || addVolumesForAllAgents[i]) {
-						Cluster cl = typologies.get(r.nextInt(typologies.size()))
-								.createVolume(agent.getLocation().x, agent.getLocation().y, cells, i);
-						if (cl != null) {
-							clusters.add(cl);
-							newVolumes.add(cl);
+			synchronized(cells){
+				Iterator<Agent> it = agents.iterator();
+				while(it.hasNext()){
+					Agent agent = it.next();
+					
+					// needs update?
+					if (!agent.isActive()){
+						it.remove();
+						IMesh c = agent.getAttractionCircle();
+						if (c != null) remove.add(c);
+						continue;
+					}
+					update = true;
+					
+					// for the trails
+					Vec3 lastLocation = agent.getLocation();
+					
+					// plethora; affecting acceleration
+					agent.plethoraMovement(agents);
+					
+					// attraction; affecting acceleration
+					TYPE newType = agent.getAttracted(clusters);
+					Cluster cl = null;
+					for (TYPE type: TYPE.values()){
+						if (type.equals(newType) || addVolumesForAllAgents[type.ordinal()]) {
+							cl = typologies.get(r.nextInt(typologies.size()))
+										.createVolume(agent.getLocation().x, agent.getLocation().y, cells, type);
+							if (cl != null) {
+								synchronized(clusters){
+									clusters.add(cl);
+								}
+								newClusters.add(cl);
+								break;
+							}
 						}
 					}
+					
+					// stigmergy; affecting acceleration
+					agent.stigmergy();
+					
+					// follow path; affecting acceleration
+					agent.followPath(linestring);
+
+					// doing the actual step
+					// this applies all the acceleration changes to the 
+					// velocity; make sure to call acceleration affecting
+					// methods before
+					agent.step(true, cl);
+					
+					// antennas; depending on velocity
+					agent.addAntennas(antennas);
+					
+					// bounce off the boundary
+					agent.bounceSpace();
+					
+					// add step to the trail
+					trailSteps.add(lastLocation);
+					trailSteps.add(agent.getLocation());
 				}
-				agent.addStep(trailSteps);
 			}
 		}
 		
@@ -403,79 +663,100 @@ public class EmCity {
 		}
 		
 		if (luci != null){
-			if (newVolumes.size() > 0){
-				luci.uploadClusters(newVolumes, null);
+			if (newClusters.size() > 0){
+				luci.uploadClusters(newClusters, null);
 			}
-//			luci.publishCamera(gui.getCam());
+			luci.publishCamera(controller.getCamera(controller.getCurrentView()));
 		}
-		generatedCells.addAll(newVolumes.stream().flatMap(cl -> cl.cells.stream()).collect(Collectors.toList()));
-		final List<IMesh> meshes = Cluster.createOutlines(newVolumes);
+		synchronized(generatedCells){
+			generatedCells.addAll(newClusters.stream().flatMap(cl -> cl.cells.stream()).collect(Collectors.toList()));
+		}
+		
+		// outlines
+		final List<IMesh> meshes = Cluster.createOutlines(newClusters);
+		generatedOutlines.addAll(meshes);
+		allMeshes.addAll(meshes);
+		
+		// trails
 		final IGeometry g = DefaultGeometry.createV(Vec3.toArray(trailSteps));
 		final IMesh newestTrailStep = new DefaultMesh(Primitive.LINES, red, g, Queue.TRANSPARENCY, Flag.DONT_CAST_SHADOW);
-		generatedOutlines.addAll(meshes);
 		newestTrailStep.setVisible(params.isShowingTrails());
 		
-		controller.run(time -> {
-//			long t = System.nanoTime();
-			IScene scene = controller.getScene();
-			
-			scene.add3DObjects(meshes);
-			
-			if (meshes.size() > 0) 
-				scene.add3DObjects(meshes);
-			
-			cells.values().stream().forEach(cell -> cell.update(scene));
-			
-			if (mAntennas != null) scene.remove3DObject(mAntennas);
-			scene.add3DObject((mAntennas = MeshUtilities.createLines(antennas, 1)));
-			
-			if (agentPoints != null) scene.remove3DObject(agentPoints);
-//			synchronized(agents){
-			scene.add3DObject((agentPoints = MeshUtilities.createPoints(agents.stream()
-					.filter(agent -> ((Agent)agent).is_active)
+		// agent positions
+		final List<Vec3> agentPositions;
+		synchronized(agents){
+			agentPositions = agents.stream()
+					.filter(agent -> ((Agent)agent).isActive())
 					.map(agent -> agent.getLocation())
-					.collect(Collectors.toList()), RGBA.WHITE, 5, Queue.OVERLAY, Flag.DONT_CAST_SHADOW)));
-
-			synchronized(trails){
-				trails.add(newestTrailStep);
-				while (trails.size() > params.getMaxTrailLength()){
-					scene.remove3DObject(trails.removeFirst());
-				}
-				scene.add3DObject(newestTrailStep);
-			}
-			
-//			System.out.println((System.nanoTime() - t) / 1000000);
-//			}
-		});
-	}
-	
-	private void updateTypologies(Stream<String> lines){
-		updateTypologies(lines, new LinkedList<>());
-	}
-	
-	public List<Integer> updateTypologies(Stream<String> lines, List<Cluster> updatedClusters){
-		final List<Integer> deletedIDs = new LinkedList<>();
-		i=0;
-		lines.forEachOrdered(s -> {
-			if (i<typologies.size())
-				typologies.get(i++).setPoints(read.typologyPointsFromString(s), cells, updatedClusters);
-			else typologies.add(new Typology(read.typologyPointsFromString(s)));
-		});
-		while (typologies.size() > i){
-			Typology t = typologies.remove(i);
-			for (Cluster cl: t.usingMe){
-				for (Cell c: cl.cells){
-					cells.remove(c.getLocationKey());
-				}
-				clusters.remove(cl);
-				if (cl.getLuciID() != 0){
-					deletedIDs.add(cl.getLuciID());
-				}
-			}
+					.collect(Collectors.toList());
 		}
-		return deletedIDs;
+		
+		// cluster center points
+		final List<IMesh> newCenterPoints = Cluster.createCenterPoints(newClusters);
+		synchronized(allMeshes){
+			allMeshes.addAll(newCenterPoints);
+		}
+		synchronized(addedCenterPoints){
+			addedCenterPoints.addAll(newCenterPoints);
+		}
+		synchronized(generatedClusters){
+			generatedClusters.addAll(newClusters);
+		}
+		
+		updateStats();
+				
+		if (update){
+			controller.run(time -> {
+				IScene scene = controller.getScene();
+				
+				scene.remove3DObjects(remove);
+				
+				scene.add3DObjects(meshes);
+				
+				synchronized(cells){
+					cells.values().stream().forEach(cell -> {
+						if (cell.update(scene)) {
+							cell.getOccupationCube().setVisible(params.isShowing(cell.getType().represent()));
+						}
+					});
+				}
+				
+				if (mAntennas == null) 
+					scene.add3DObject((mAntennas = MeshUtilities.createLines(antennas, new LineMaterial(RGBA.RED).setWidth(0.5f))));
+				else 
+					mAntennas.getGeometry().modify((attributes, data) -> {
+						data[0] = Vec3.toArray(antennas);
+					});
+				
+				
+				if (agentPoints == null) 
+					scene.add3DObject((agentPoints = MeshUtilities.createPoints(agentPositions, RGBA.WHITE, 5, Queue.OVERLAY, Flag.DONT_CAST_SHADOW)));
+				else
+					agentPoints.getGeometry().modify((attributes, data) -> {
+						data[0] = Vec3.toArray(agentPositions);
+					});
+	
+				synchronized(trails){
+					trails.add(newestTrailStep);
+					while (trails.size() > params.getMaxTrailLength()){
+						scene.remove3DObject(trails.removeFirst());
+					}
+					scene.add3DObject(newestTrailStep);
+				}
+				
+				scene.add3DObjects(newCenterPoints);
+				
+			});
+		}
 	}
 	
+	private void updateStats() {
+		Display.getDefault().asyncExec(() -> {
+			pv.updateAgents(agents);
+			pv.updateClusters(generatedClusters);
+		});
+	}
+
 	public NavigationTool getTool() {
 		return new NavigationTool(controller, new PickTool(controller)){
 			@Override
@@ -491,53 +772,69 @@ public class EmCity {
 					break;
 				case GLFW.GLFW_KEY_T:
 					try {
-						updateTypologies(read.lines("data/typologies_test.txt"));
+						controller.updateTypologies();
 					} catch (IOException e1) {
 						e1.printStackTrace();
 					}
 					break;
-				case GLFW.GLFW_KEY_I:
-					addVolumesForAllAgents[Agent.PRIVATE] = !addVolumesForAllAgents[Agent.PRIVATE];
-					break;
 				case GLFW.GLFW_KEY_C:
-					addVolumesForAllAgents[Agent.CULTURE] = !addVolumesForAllAgents[Agent.CULTURE];
+					boolean att = !params.isShowingAttractionCircle();
+					params.setShowingAttractionCircle(att);
+					controller.showAttractionCircle(att);
+					break;
+				case GLFW.GLFW_KEY_D:
+					params.setShowingDirection(!params.isShowingDirection());
+					break;
+				case GLFW.GLFW_KEY_I:
+					controller.toggleVolumes(TYPE.PRIVATE.ordinal());
+					break;
+				case GLFW.GLFW_KEY_U:
+					controller.toggleVolumes(TYPE.CULTURE.ordinal());
 					break;
 				case GLFW.GLFW_KEY_Q:
-					addVolumesForAllAgents[Agent.SQUARE] = !addVolumesForAllAgents[Agent.SQUARE];
+					controller.toggleVolumes(TYPE.SQUARE.ordinal());
 					break;
-				case GLFW.GLFW_KEY_B:
-					drawExistingBuildings = !drawExistingBuildings;
-					break;
-				case GLFW.GLFW_KEY_P:
+				case GLFW.GLFW_KEY_H:
 					params.setShowPheromone(!params.isShowPheromone());
 					break;
+				case GLFW.GLFW_KEY_O:
+					controller.moveOrigins();
+					break;
+				case GLFW.GLFW_KEY_P:
+					params.setFollowingPath(!params.isFollowingPath());
+					break;
+				case GLFW.GLFW_KEY_S:
+					params.setSwarmingOnOff(!params.isSwarmingOnOff());
+					break;
+				case GLFW.GLFW_KEY_G:
+					params.setGeneratingVolumes(!params.isGeneratingVolumes());
+					break;
+				case GLFW.GLFW_KEY_X:
+					params.setShowingTrails(!params.isShowingTrails());
+					controller.toggleShowTrails();
+					break;
+				case GLFW.GLFW_KEY_B:
+					params.setShowing(REPRESENTATION.BUILDINGS2D, !params.isShowing(REPRESENTATION.BUILDINGS2D));
+					controller.geometryVisibility(REPRESENTATION.BUILDINGS2D);
+					break;
 				case GLFW.GLFW_KEY_W:
-					DRAW_ROADS = !DRAW_ROADS;
+					params.setShowing(REPRESENTATION.ROADS, !params.isShowing(REPRESENTATION.ROADS));
+					controller.geometryVisibility(REPRESENTATION.ROADS);
 					break;
 				case GLFW.GLFW_KEY_A:
-					synchronized(agents){
-						final Vec2 bounce = new Vec2(sceneWidth, sceneHeight);
-						iteratePopulations((i,size)->{
-							Agent agent = new Agent(EmCity.this, Agent.initLocations[i], params, bounce, pheromones);
-							agent.setVelocity(new Vec3(MathUtilities.random(-1, 0.5f), MathUtilities.random(-1, 0.5f), 0));
-							// TODO - the velocity can be changed and can contribute to the  weights as well
-							agents.add(agent);
-//							agent.update();
-//							agent.interacting_update(true);
-						});
-					}
+					controller.addAgents();
 					break;
 				case GLFW.GLFW_KEY_1:
-					drawBuildings[1] = !drawBuildings[1]; // 1 = Agent.PRIVATE
+					params.setShowing(REPRESENTATION.CULTURE, !params.isShowing(REPRESENTATION.CULTURE));
+					controller.geometryVisibility(REPRESENTATION.CULTURE);
 					break;
 				case GLFW.GLFW_KEY_2:
-					drawBuildings[2] = !drawBuildings[2]; // 2 = Agent.CULTURE
+					params.setShowing(REPRESENTATION.SQUARE, !params.isShowing(REPRESENTATION.SQUARE));
+					controller.geometryVisibility(REPRESENTATION.SQUARE);
 					break;
 				case GLFW.GLFW_KEY_3:
-					drawBuildings[3] = !drawBuildings[3]; // 3 = Agent.SQUARE
-					break;
-				case GLFW.GLFW_KEY_F:
-					// TODO: export camera view as hidden-lines vector drawing to PDF
+					params.setShowing(REPRESENTATION.PRIVATE, !params.isShowing(REPRESENTATION.PRIVATE));
+					controller.geometryVisibility(REPRESENTATION.PRIVATE);
 					break;
 				}
 			}

@@ -3,6 +3,8 @@ import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 
+import emcity.EmCity.TYPE;
+
 class Typology {
 	
 	List<int[]> points;
@@ -26,10 +28,16 @@ class Typology {
 	
 	public boolean setPoints(List<int[]> p, Map<Long, Cell> cells, List<Cluster> updated) {
 		if (!listsOfArraysEqual(p, points)){
+//			List<IMesh> remove = new LinkedList<>();
 			for (Cluster cl: usingMe){
-				for (Cell cell: cl.cells) cells.remove(cell);
+				for (Cell cell: cl.cells) {
+					cells.remove(cell.getLocationKey());
+				}
 				cl.setPoints(p, cells);
-				updated.add(cl);
+				if (cl.cellCount() > 0){
+					cl.init();
+					updated.add(cl);
+				}
 			}
 			points = p;
 			return true;
@@ -37,14 +45,14 @@ class Typology {
 		return false;
 	}
 
-	public Cluster createVolume(float x, float y, Map<Long, Cell> cells, int type) {
+	public Cluster createVolume(float x, float y, Map<Long, Cell> cells, TYPE type) {
 		// round agent position (/10 + 5)
 		int a_x = (int) Math.floor(x * 0.1) * 10 + 5;
 		int a_y = (int) Math.floor(y * 0.1) * 10 + 5;
 		
 
 		if (points.size() > 0){
-			Cluster cluster = Cluster.create(type);
+			Cluster cluster = new Cluster(type);
 			cluster.setCenter(a_x, a_y);
 			cluster.setPoints(points, cells);
 			if (cluster.cellCount() > 0){
