@@ -217,7 +217,7 @@ public class Cluster implements Typed, Colonizeable {
 	public List<double[]> getFootprint(){
 		Geometry g = CascadedPolygonUnion.union(cells.stream()
 				.map(c -> new Polygon(new LinearRing(new CoordinateArraySequence(
-						c.getFootPrint().stream().map(i -> new Coordinate(i[0], -i[1])).toArray(Coordinate[]::new)), gf), null, gf))
+						c.getFootPrint().stream().map(i -> new Coordinate(i[0], i[1])).toArray(Coordinate[]::new)), gf), null, gf))
 				.collect(Collectors.toList()))
 				.reverse();
 		if (g != null && g.getGeometryType() == "Polygon") {

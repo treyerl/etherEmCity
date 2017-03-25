@@ -86,10 +86,9 @@ public class EmCityLuciService extends LcRemoteService {
     	DefaultArgsProcessor asp = new DefaultArgsProcessor(args);
 		System.out.println("EmCity registering at "+asp.getHostname()+":"+asp.getPort());
 		EmCityLuciService em = new EmCityLuciService(asp);
-		em.setEmCity((new EmCity()).setLuci(em));
 		new Thread(em).start();
-		//em.connect(asp.getHostname(), asp.getPort());
-		
+		em.connect(asp.getHostname(), asp.getPort());
+		em.setEmCity((new EmCity(em)));
     }
 	
 	public void createScenario(Consumer<Integer> onScenarioCreated){
@@ -159,7 +158,7 @@ public class EmCityLuciService extends LcRemoteService {
 		if (deletedIDs != null){
 			features.put(new JSONObject()
 					.put("type", "Feature")
-					.put("properties", new JSONObject().put("deletedIDs", deletedIDs)));
+					.put("properties", new JSONObject().put("deleted_geomIDs", deletedIDs)));
 		}
 		Message m = new Message(new JSONObject()
 				.put("run", "scenario.geojson.Update")
@@ -206,7 +205,6 @@ public class EmCityLuciService extends LcRemoteService {
 									}
 								});
 					}
-					
 				}
 			});
 		} else {
@@ -232,7 +230,8 @@ public class EmCityLuciService extends LcRemoteService {
 				.put("location", new JSONObject()
 						.put("x",  f(pos.x))
 						.put("y",  f(pos.y))
-						.put("z",  f(pos.z)));
+						.put("z",  f(pos.z)))
+				.put("fov", cam.getFov());
 	}
 	
 	private float f(float f){

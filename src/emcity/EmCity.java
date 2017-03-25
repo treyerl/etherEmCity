@@ -49,6 +49,7 @@ import org.lwjgl.glfw.GLFW;
 
 import ch.fhnw.ether.controller.DefaultController;
 import ch.fhnw.ether.controller.event.IKeyEvent;
+import ch.fhnw.ether.controller.event.IPointerEvent;
 import ch.fhnw.ether.controller.tool.NavigationTool;
 import ch.fhnw.ether.controller.tool.PickTool;
 import ch.fhnw.ether.platform.Platform;
@@ -125,7 +126,11 @@ public class EmCity {
 			});
 		}
 		
-		private void removeGeneratedGeometry(){
+		private List<Integer> removeGeneratedGeometry(){
+			List<Integer> idsToDelete = generatedClusters.stream()
+					.map(cl -> cl.getLuciID())
+					.filter(id -> id != 0)
+					.collect(Collectors.toList());
 			run(time -> {
 				IScene scene = getScene();
 				synchronized(generatedOutlines){
@@ -157,6 +162,7 @@ public class EmCity {
 					addedCenterPoints.clear();
 				}
 			});
+			return idsToDelete;
 		}
 		
 		public void resetScene() {
@@ -231,7 +237,10 @@ public class EmCity {
 		}
 		
 		public void updateTypologies() throws IOException{
-			updateTypologies(read.lines("data/typologies_test.txt"), new LinkedList<>());
+			List<Cluster> updatedClusters = new LinkedList<>();
+			List<Integer> deletedIDs = updateTypologies(read.lines("data/typologies_test.txt"), updatedClusters);
+			if (luci != null) 
+				luci.uploadClusters(updatedClusters, deletedIDs);
 		}
 		
 		public List<Integer> updateTypologies(Stream<String> lines, List<Cluster> updatedClusters){
@@ -266,7 +275,11 @@ public class EmCity {
 			}
 
 			if (needToRemoveOutlines[0]){
-				removeGeneratedGeometry();
+				deletedIDs.addAll(removeGeneratedGeometry());
+				deletedIDs.removeAll(newClusters.stream()
+						.map(cl -> cl.getLuciID())
+						.filter(id -> id != 0)
+						.collect(Collectors.toList()));
 				newOutlines.addAll(Cluster.createOutlines(newClusters));
 				List<IMesh> centerPoints = Cluster.createCenterPoints(newClusters);
 				controller.run(time -> {
@@ -399,9 +412,12 @@ public class EmCity {
 	
 	// TODO: IMutableMesh trails
 	
+	public EmCity(){
+		this(null);
+	}
 	
-	public EmCity() {
-		
+	public EmCity(EmCityLuciService luciService) {
+		luci = luciService;
 		timer = new Timer();
 		params = new Parameters();
 		trails = new LinkedList<>();
@@ -487,11 +503,6 @@ public class EmCity {
 	
 	public Parameters getParameters(){
 		return params;
-	}
-	
-	public EmCity setLuci(EmCityLuciService luci){
-		this.luci = luci;
-		return this;
 	}
 
 	private void loadGeometry(){
@@ -666,7 +677,6 @@ public class EmCity {
 			if (newClusters.size() > 0){
 				luci.uploadClusters(newClusters, null);
 			}
-			luci.publishCamera(controller.getCamera(controller.getCurrentView()));
 		}
 		synchronized(generatedCells){
 			generatedCells.addAll(newClusters.stream().flatMap(cl -> cl.cells.stream()).collect(Collectors.toList()));
@@ -759,6 +769,23 @@ public class EmCity {
 
 	public NavigationTool getTool() {
 		return new NavigationTool(controller, new PickTool(controller)){
+			
+			@Override
+			public void pointerDragged(IPointerEvent e){
+				super.pointerDragged(e);
+				if (luci != null) {
+					luci.publishCamera(getCamera(e.getView()));
+				}
+			}
+			
+			@Override
+			public void pointerScrolled(IPointerEvent e){
+				super.pointerScrolled(e);
+				if (luci != null){
+					luci.publishCamera(getCamera(e.getView()));
+				}
+			}
+			
 			@Override
 			public void keyPressed(IKeyEvent e) {
 				switch(e.getKey()){
