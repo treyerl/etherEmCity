@@ -2,6 +2,7 @@ package emcity.luci;
 
 import java.util.LinkedList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
@@ -56,12 +57,24 @@ public class EmCityLuciService extends LcRemoteService {
 				AttachmentAsArray a = (AttachmentAsArray) input.getAttachment(0);
 				
 				Reader r = new Reader();
-				List<Cluster> updatedClusters = new LinkedList<>();
-				List<Integer> deletedIDs = emc.getController().updateTypologies(r.lines(a.getByteBuffer()), updatedClusters);
-				uploadClusters(updatedClusters, deletedIDs);
-				return new Message(new JSONObject().put("result", new JSONObject()
-						.put("updatedClusters", updatedClusters.size())
-						.put("deletedClusters", deletedIDs.size())));
+				final CountDownLatch cdl = new CountDownLatch(1);
+				final int[] numbers = new int[2];
+				emc.getController().updateTypologies(r.lines(a.getByteBuffer()), (updatedClusters, deletedIDs) -> {
+					uploadClusters(updatedClusters, deletedIDs);
+					numbers[0] = updatedClusters.size();
+					numbers[1] = deletedIDs.size();
+					cdl.countDown();
+				});
+				try {
+					cdl.await();
+					return new Message(new JSONObject().put("result", new JSONObject()
+							.put("updatedClusters", numbers[0])
+							.put("deletedClusters", numbers[1])));
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+					return new Message(new JSONObject().put("error", e.getMessage()));
+				}
+				
 			}
 		};
 	}

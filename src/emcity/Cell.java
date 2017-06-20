@@ -47,6 +47,9 @@ class Cell implements Typed, Colonizeable{
 		this.cluster = c;
 		this.activity = type.getColor();
 		this.type = type;
+		this.occupationCube = MeshUtilities.createCube(new ColorMaterial(activity), Queue.DEPTH, EnumSet.of(Flag.DONT_CAST_SHADOW));
+		this.occupationCube.getAttributes().put(REPRESENTATION.key(), REPRESENTATION.values()[type.ordinal()]);
+		this.occupationCube.setName(x+""+y);
 	}
 	
 	public boolean is(TYPE t){
@@ -156,18 +159,26 @@ class Cell implements Typed, Colonizeable{
 		int available = capacity - occupation;
 		int taken = Math.min(available, newAgents);
 		occupation += taken;
-		if (occupation > 0){
-			
-			update = (IScene scene) -> {
-				if (occupationCube == null){
-					occupationCube = MeshUtilities.createCube(new ColorMaterial(activity), Queue.DEPTH, EnumSet.of(Flag.DONT_CAST_SHADOW));
-					// needs more computation in the end
-//					occupationCube = new DefaultMesh(Primitive.TRIANGLES, new ColorMaterial(activity), unitCube, Queue.DEPTH, EnumSet.of(Flag.DONT_CAST_SHADOW, Flag.SHADER_TRANSFORMATION));
-					occupationCube.getAttributes().put(REPRESENTATION.key(), REPRESENTATION.values()[type.ordinal()]);
-					scene.add3DObject(occupationCube);
-				}
-				occupationCube.setTransform(getOccupationTransformation());
+		if (isFull()){
+			occupationCube.setTransform(getOccupationTransformation());
+			cluster.addOccupationCube(occupationCube);
+			update = scene -> {
+				scene.remove3DObject(occupationCube);
 			};
+		}
+		else if (occupation > 0){
+			// first colonization
+			if (occupation == taken){
+				update = (IScene scene) -> {
+					scene.add3DObject(occupationCube);
+					occupationCube.setTransform(getOccupationTransformation());
+				};
+			} else {
+				update = (IScene scene) -> {
+					occupationCube.setTransform(getOccupationTransformation());
+				};
+			}
+			
 		}
 		return newAgents - taken;
 	}
@@ -185,6 +196,10 @@ class Cell implements Typed, Colonizeable{
 			return true;
 		}
 		return false;
+	}
+	
+	public boolean needsUpdate(){
+		return update != null;
 	}
 	
 	public boolean isFull() {

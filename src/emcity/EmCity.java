@@ -33,13 +33,16 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.CountDownLatch;
 import java.util.function.BiConsumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -48,6 +51,7 @@ import org.eclipse.swt.widgets.Display;
 import org.lwjgl.glfw.GLFW;
 
 import ch.fhnw.ether.controller.DefaultController;
+import ch.fhnw.ether.controller.event.IEventScheduler;
 import ch.fhnw.ether.controller.event.IKeyEvent;
 import ch.fhnw.ether.controller.event.IPointerEvent;
 import ch.fhnw.ether.controller.tool.NavigationTool;
@@ -117,89 +121,72 @@ public class EmCity {
 		/** ---- BUTTON ACTIONS ---- */
 		
 		public void toggleShowTrails(){
-			run(time -> {
-				synchronized(trails){
-					if (params.isShowingTrails())
-						trails.stream().forEach(t -> t.setVisible(true));
-					else trails.stream().forEach(t -> t.setVisible(false));
-				}
+			step(() -> {
+				if (params.isShowingTrails())
+					trails.stream().forEach(t -> t.setVisible(true));
+				else trails.stream().forEach(t -> t.setVisible(false));
 			});
 		}
 		
-		private List<Integer> removeGeneratedGeometry(){
-			List<Integer> idsToDelete = generatedClusters.stream()
+		private IEventScheduler.IAction removeGeneratedGeometry(CountDownLatch cdl){
+			return time -> {
+				allMeshes.removeAll(generatedOutlines);
+				IScene scene = getScene();
+				scene.remove3DObjects(generatedOutlines);
+				generatedOutlines.clear();
+				generatedCells.stream().forEach(c -> {
+					if (c.getOccupationCube() != null) 
+						scene.remove3DObject(c.getOccupationCube());
+					cells.remove(c.getLocationKey());
+				});
+				generatedClusters.stream().forEach(c -> {
+					if (c.getOccupationMesh() != null){
+						scene.remove3DObject(c.getOccupationMesh());
+					}
+				});
+				generatedCells.clear();
+				clusters.removeAll(generatedClusters);
+				generatedClusters.clear();
+				scene.remove3DObjects(addedCenterPoints);
+				addedCenterPoints.clear();
+				if (cdl != null) cdl.countDown();
+			};
+		}
+		
+		private List<Integer> getGeneratedClusterIDs(){
+			return generatedClusters.stream()
 					.map(cl -> cl.getLuciID())
 					.filter(id -> id != 0)
 					.collect(Collectors.toList());
-			run(time -> {
-				IScene scene = getScene();
-				synchronized(generatedOutlines){
-					synchronized(allMeshes){
-						allMeshes.removeAll(generatedOutlines);
-					}
-					scene.remove3DObjects(generatedOutlines);
-					generatedOutlines.clear();
-				}
-				synchronized(generatedCells){
-					synchronized(cells){
-						generatedCells.stream().forEach(c -> {
-							if (c.getOccupationCube() != null) 
-								scene.remove3DObject(c.getOccupationCube());
-							cells.remove(c.getLocationKey());
-						});
-					}
-					generatedCells.clear();
-				}
-				synchronized(generatedClusters){
-					synchronized(clusters){
-						clusters.removeAll(generatedClusters);
-					}
-					generatedClusters.clear();
-				}
-				
-				synchronized(addedCenterPoints){
-					scene.remove3DObjects(addedCenterPoints);
-					addedCenterPoints.clear();
-				}
-			});
-			return idsToDelete;
 		}
 		
 		public void resetScene() {
-			removeGeneratedGeometry();
-			run(time -> {
-				IScene scene = getScene();
-				synchronized(trails){
+			step(() -> {
+				List<Integer> deletedIDs = getGeneratedClusterIDs();
+				CountDownLatch cdl = new CountDownLatch(1);
+				// use the count down latch from the second IAction to synchronize with our step (assuming FIFO execution)
+				run(removeGeneratedGeometry(null));
+				run(time -> {
+					IScene scene = getScene();
 					scene.remove3DObjects(trails);
 					trails.clear();
-				}
-				synchronized(cells){
-					cells.values().stream().forEach(c -> {
-						c.setOccupation(0);
-					});
-				}
-				synchronized(clusters){
-					clusters.stream().forEach(c -> {
-						c.setOccupation(0);
-					});
-				}
-				synchronized(agentPoints){
-					scene.remove3DObjects(agentPoints);
-					agentPoints = null;
-				}
-				synchronized(mAntennas){
-					scene.remove3DObject(mAntennas);
-					mAntennas = null;
-				}
-				synchronized(agents){
+					cells.values().stream().forEach(c -> { c.setOccupation(0); });
+					clusters.stream().forEach(c -> { c.setOccupation(0); });
 					agents.forEach(a -> {
 						if (a.getAttractionCircle() != null) 
 							scene.remove3DObject(a.getAttractionCircle());
 					});
 					agents.clear();
+					addAgents();
+					cdl.countDown();
+				});
+				if (luci != null) luci.uploadClusters(new ArrayList<>(), deletedIDs);
+				try {
+					// wait until the scene thread is finished with all our lists (avoid concurrency problems with the next step)
+					cdl.await();
+				} catch (InterruptedException e) {
+					e.printStackTrace();
 				}
-				
-				addAgents();
 			});
 		}
 		
@@ -213,18 +200,24 @@ public class EmCity {
 						IMesh cube = c.getOccupationCube();
 						if (cube != null) cube.setVisible(params.isShowing(rep));
 					});
+					clusters.stream().filter(c -> c.is(t)).forEach(c ->{
+						IMesh mesh = c.getOccupationMesh();
+						if (mesh != null) mesh.setVisible(params.isShowing(rep));
+					});
 				}
 			});
 		}
 		public void showAttractionCircle(boolean att) {
-			agents.forEach(agent -> agent.isShowingAttractionCircle(att));
+			step(() -> {
+				agents.forEach(agent -> agent.isShowingAttractionCircle(att));
+			});
 		}
 		public void toggleVolumes(int index) {
 			addVolumesForAllAgents[index] = !addVolumesForAllAgents[index];
 		}
 		
 		public void addAgents(){
-			synchronized(agents){
+			step(()->{
 				final Vec2 bounce = new Vec2(sceneWidth, sceneHeight);
 				iteratePopulations((i,size) -> {
 					Agent agent = new Agent(EmCity.this, Agent.initLocations[i], params, bounce, pheromones);
@@ -233,68 +226,66 @@ public class EmCity {
 					// TODO - the velocity can be changed and can contribute to the weights as well
 					agents.add(agent);
 				});
-			}
+			});
 		}
 		
 		public void updateTypologies() throws IOException{
-			List<Cluster> updatedClusters = new LinkedList<>();
-			List<Integer> deletedIDs = updateTypologies(read.lines("data/typologies_test.txt"), updatedClusters);
-			if (luci != null) 
-				luci.uploadClusters(updatedClusters, deletedIDs);
+			updateTypologies(read.lines("data/typologies_test.txt"), (updatedClusters, deletedIDs) -> {
+				if (luci != null) luci.uploadClusters(updatedClusters, deletedIDs);
+			});
 		}
 		
-		public List<Integer> updateTypologies(Stream<String> lines, List<Cluster> updatedClusters){
-			final List<Integer> deletedIDs = new LinkedList<>();
-			i=0;
-			final boolean[] needToRemoveOutlines = new boolean[]{false};
-			final List<IMesh> newOutlines = new LinkedList<>();
-			List<Cluster> newClusters = new LinkedList<>();
-			synchronized(cells){
-				synchronized(typologies){
-					lines.forEachOrdered(s -> {
-						if (i<typologies.size()){
-							Typology t = typologies.get(i++);
-							if (t.setPoints(read.typologyPointsFromString(s), cells, updatedClusters)){
-								needToRemoveOutlines[0] = true;
-							}
-							newClusters.addAll(t.usingMe);
-						} else {
-							typologies.add(new Typology(read.typologyPointsFromString(s)));
+		public void updateTypologies(Stream<String> lines, BiConsumer<List<Cluster>, List<Integer>> then){
+			step(() -> {
+				List<Integer> deletedIDs = new LinkedList<>();
+				final List<Cluster> updatedClusters = new LinkedList<>();
+				i=0;
+				final boolean[] needToRemoveOutlines = new boolean[]{false};
+				final List<IMesh> newOutlines = new LinkedList<>();
+				List<Cluster> newClusters = new LinkedList<>();
+				lines.forEachOrdered(s -> {
+					if (i<typologies.size()){
+						Typology t = typologies.get(i++);
+						if (t.setPoints(read.typologyPointsFromString(s), cells, updatedClusters)){
+							needToRemoveOutlines[0] = true;
 						}
-					});
-				}
-			}
-
-			synchronized(clusters){
-				synchronized(cells){
-					while (typologies.size() > i){
-						needToRemoveOutlines[0] = true;
-						typologies.remove(i);
-					}
-				}
-			}
-
-			if (needToRemoveOutlines[0]){
-				deletedIDs.addAll(removeGeneratedGeometry());
-				deletedIDs.removeAll(newClusters.stream()
-						.map(cl -> cl.getLuciID())
-						.filter(id -> id != 0)
-						.collect(Collectors.toList()));
-				newOutlines.addAll(Cluster.createOutlines(newClusters));
-				List<IMesh> centerPoints = Cluster.createCenterPoints(newClusters);
-				controller.run(time -> {
-					synchronized(generatedOutlines){
-						generatedOutlines.addAll(newOutlines);
-						controller.getScene().add3DObjects(newOutlines);
-					}
-					synchronized(addedCenterPoints){
-						controller.getScene().add3DObjects(centerPoints);
-						addedCenterPoints.addAll(centerPoints);
+						newClusters.addAll(t.usingMe);
+					} else {
+						typologies.add(new Typology(read.typologyPointsFromString(s)));
 					}
 				});
-			}
-			updateStats();
-			return deletedIDs;
+
+				while (typologies.size() > i){
+					needToRemoveOutlines[0] = true;
+					typologies.remove(i);
+				}
+
+				if (needToRemoveOutlines[0]){
+					deletedIDs = getGeneratedClusterIDs();
+					CountDownLatch cdl = new CountDownLatch(1);
+					run(removeGeneratedGeometry(cdl));
+					deletedIDs.removeAll(newClusters.stream()
+							.map(cl -> cl.getLuciID())
+							.filter(id -> id != 0)
+							.collect(Collectors.toList()));
+					newOutlines.addAll(Cluster.createOutlines(newClusters));
+					List<IMesh> centerPoints = Cluster.createCenterPoints(newClusters);
+					this.run(time -> {
+						getScene().add3DObjects(newOutlines);
+						getScene().add3DObjects(centerPoints);
+					});
+					try {
+						// removeGeneratedGeometry() is modifying generatedOutlines; therefore we wait here
+						cdl.await();
+					} catch (InterruptedException e) {
+						e.printStackTrace();
+					}
+					generatedOutlines.addAll(newOutlines);
+					addedCenterPoints.addAll(centerPoints);
+				}
+				then.accept(updatedClusters, deletedIDs);
+			});
+			
 		}
 		public void moveOrigins() {
 			System.out.println("TODO: move origins");
@@ -379,10 +370,11 @@ public class EmCity {
 	private final List<Agent> agents;
 	private final List<Typology> typologies;
 	private final LinkedList<IMesh> trails; 
-	private final List<Cell> generatedCells;
+	private final Set<Cell> generatedCells;
 	private final List<IMesh> allMeshes, generatedOutlines, addedCenterPoints;
 	private final List<Cluster> clusters, generatedClusters;
 	private final Map<Long, Cell> cells;
+	private final List<Runnable> tasks;
 	
 	private Reader read;
 	private LineStrip linestring;
@@ -421,10 +413,11 @@ public class EmCity {
 		timer = new Timer();
 		params = new Parameters();
 		trails = new LinkedList<>();
-		generatedCells = new ArrayList<>();
+		generatedCells = new HashSet<>();
 		allMeshes = new ArrayList<>();
 		generatedOutlines = new ArrayList<>();
 		addedCenterPoints = new ArrayList<>();
+		tasks = new ArrayList<>();
 		agents = new ArrayList<>();
 		cells = new HashMap<>();
 		clusters = new ArrayList<>();
@@ -466,31 +459,54 @@ public class EmCity {
 		new Thread(() -> {
 			controller.addAgents();
 			loadGeometry();
+			final CountDownLatch cdl = new CountDownLatch(1);
 			controller.run(time -> {
 				drawGeoemtry();
+				cdl.countDown();
 			});
-			// luci
-			if (luci != null)
-				if (luci.isConnected())
-					luci.createScenario(ScID -> {
-						luci.uploadClusters(clusters, null);
-						timer.schedule((step = step()), frameDuration, frameDuration);
-					});
-				else {
-					System.err.println("not connected to Luci!");
-					System.exit(0);
-				}
-			else timer.schedule((step = step()), frameDuration, frameDuration);
+			
+			try {
+				cdl.await();
+				// luci
+				if (luci != null)
+					if (luci.isConnected())
+						luci.createScenario(ScID -> {
+							luci.uploadClusters(clusters, null);
+							timer.schedule((step = tick()), frameDuration, frameDuration);
+						});
+					else {
+						System.err.println("not connected to Luci!");
+						System.exit(0);
+					}
+				else timer.schedule((step = tick()), frameDuration, frameDuration);
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
 		}).start();
 	}
 	
-	private TimerTask step(){
+	private TimerTask tick(){
 		return new TimerTask(){
 			@Override
 			public void run() {
+				List<Runnable> tt;
+				synchronized(tasks){
+					tt = new ArrayList<>(tasks);
+					tasks.clear();
+				}
+				for (Runnable r: tt){
+					r.run();
+				}
 				tickAgents();
+				updateStats();
 			}
 		};
+	}
+	
+	private void step(Runnable task){
+		synchronized(tasks){
+			tasks.add(task);
+		}
 	}
 	
 	public EmCityController getController(){
@@ -582,6 +598,10 @@ public class EmCity {
 			allMeshes.stream().filter(g -> re.equals(g.getAttributes()
 					.get(REPRESENTATION.key()))).forEach(g -> g.setVisible(params.isShowing(re)));
 		}
+		
+		// prepare dynamic elements: agents points & antennas (they are empty, yes)
+		scene.add3DObject((agentPoints = MeshUtilities.createPoints(new ArrayList<>(), RGBA.WHITE, 5, Queue.OVERLAY, Flag.DONT_CAST_SHADOW)));
+		scene.add3DObject((mAntennas = MeshUtilities.createLines(new ArrayList<>(), new LineMaterial(RGBA.RED).setWidth(0.5f))));
 	}
 	
 	private void iteratePopulations(BiConsumer<Integer,Integer> f){
@@ -594,75 +614,67 @@ public class EmCity {
 	}
 	
 	public void tickAgents() {
-		synchronized(clusters){
-			clusters.stream().forEach(cl -> cl.resetMaxAgentDistance());
-		}
+		clusters.stream().forEach(cl -> cl.resetMaxAgentDistance());
 		List<Vec3> antennas = new LinkedList<>();
 		List<Cluster> newClusters = new LinkedList<>();
 		List<Vec3> trailSteps = new LinkedList<>();
 		final List<IMesh> remove = new LinkedList<>();
 		boolean update = false;
-		synchronized(agents){
-			synchronized(cells){
-				Iterator<Agent> it = agents.iterator();
-				while(it.hasNext()){
-					Agent agent = it.next();
-					
-					// needs update?
-					if (!agent.isActive()){
-						it.remove();
-						IMesh c = agent.getAttractionCircle();
-						if (c != null) remove.add(c);
-						continue;
+		Iterator<Agent> it = agents.iterator();
+		while(it.hasNext()){
+			Agent agent = it.next();
+			
+			// needs update?
+			if (!agent.isActive()){
+				it.remove();
+				IMesh c = agent.getAttractionCircle();
+				if (c != null) remove.add(c);
+				continue;
+			}
+			update = true;
+			
+			// for the trails
+			Vec3 lastLocation = agent.getLocation();
+			
+			// plethora; affecting acceleration
+			agent.plethoraMovement(agents);
+			
+			// attraction; affecting acceleration
+			TYPE newType = agent.getAttracted(clusters);
+			Cluster cl = null;
+			for (TYPE type: TYPE.values()){
+				if (type.equals(newType) || addVolumesForAllAgents[type.ordinal()]) {
+					cl = typologies.get(r.nextInt(typologies.size()))
+								.createVolume(agent.getLocation().x, agent.getLocation().y, cells, type);
+					if (cl != null) {
+						clusters.add(cl);
+						newClusters.add(cl);
+						break;
 					}
-					update = true;
-					
-					// for the trails
-					Vec3 lastLocation = agent.getLocation();
-					
-					// plethora; affecting acceleration
-					agent.plethoraMovement(agents);
-					
-					// attraction; affecting acceleration
-					TYPE newType = agent.getAttracted(clusters);
-					Cluster cl = null;
-					for (TYPE type: TYPE.values()){
-						if (type.equals(newType) || addVolumesForAllAgents[type.ordinal()]) {
-							cl = typologies.get(r.nextInt(typologies.size()))
-										.createVolume(agent.getLocation().x, agent.getLocation().y, cells, type);
-							if (cl != null) {
-								synchronized(clusters){
-									clusters.add(cl);
-								}
-								newClusters.add(cl);
-								break;
-							}
-						}
-					}
-					
-					// stigmergy; affecting acceleration
-					agent.stigmergy();
-					
-					// follow path; affecting acceleration
-					agent.followPath(linestring);
-
-					// doing the actual step
-					// this applies all the acceleration changes to the 
-					// velocity; make sure to call acceleration affecting
-					// methods before
-					agent.step(true, cl);
-					
-					// antennas; depending on velocity
-					agent.addAntennas(antennas);
-					
-					// bounce off the boundary
-					agent.bounceSpace();
-					
-					// add step to the trail
-					trailSteps.add(lastLocation);
-					trailSteps.add(agent.getLocation());
 				}
 			}
+			
+			// stigmergy; affecting acceleration
+			agent.stigmergy();
+			
+			// follow path; affecting acceleration
+			agent.followPath(linestring);
+
+			// doing the actual step
+			// this applies all the acceleration changes to the 
+			// velocity; make sure to call acceleration affecting
+			// methods before
+			agent.step(true, cl);
+			
+			// antennas; depending on velocity
+			agent.addAntennas(antennas);
+			
+			// bounce off the boundary
+			agent.bounceSpace();
+			
+			// add step to the trail
+			trailSteps.add(lastLocation);
+			trailSteps.add(agent.getLocation());
 		}
 		
 		if (params.getTrailDecay() < 1) 
@@ -678,9 +690,7 @@ public class EmCity {
 				luci.uploadClusters(newClusters, null);
 			}
 		}
-		synchronized(generatedCells){
-			generatedCells.addAll(newClusters.stream().flatMap(cl -> cl.cells.stream()).collect(Collectors.toList()));
-		}
+		generatedCells.addAll(newClusters.stream().flatMap(cl -> cl.cells.stream()).collect(Collectors.toList()));
 		
 		// outlines
 		final List<IMesh> meshes = Cluster.createOutlines(newClusters);
@@ -693,66 +703,45 @@ public class EmCity {
 		newestTrailStep.setVisible(params.isShowingTrails());
 		
 		// agent positions
-		final List<Vec3> agentPositions;
-		synchronized(agents){
-			agentPositions = agents.stream()
-					.filter(agent -> ((Agent)agent).isActive())
-					.map(agent -> agent.getLocation())
-					.collect(Collectors.toList());
-		}
+		final List<Vec3> agentPositions = agents.stream()
+				.filter(agent -> ((Agent)agent).isActive())
+				.map(agent -> agent.getLocation())
+				.collect(Collectors.toList());
+		;
 		
 		// cluster center points
 		final List<IMesh> newCenterPoints = Cluster.createCenterPoints(newClusters);
-		synchronized(allMeshes){
-			allMeshes.addAll(newCenterPoints);
-		}
-		synchronized(addedCenterPoints){
-			addedCenterPoints.addAll(newCenterPoints);
-		}
-		synchronized(generatedClusters){
-			generatedClusters.addAll(newClusters);
-		}
+		allMeshes.addAll(newCenterPoints);
+		addedCenterPoints.addAll(newCenterPoints);
+		generatedClusters.addAll(newClusters);
 		
-		updateStats();
+		final List<Cell> cellsToUpdate = cells.values().stream().filter(c -> c.needsUpdate()).collect(Collectors.toList());
+		final List<Cluster> clustersToUpdate = clusters.stream().filter(c -> c.needsUpdate()).collect(Collectors.toList());
+		final List<IMesh> trailStepsToRemove = new LinkedList<>();
+		trails.add(newestTrailStep);
+		while (trails.size() > params.getMaxTrailLength()){
+			trailStepsToRemove.add(trails.removeFirst());
+		}
 				
 		if (update){
 			controller.run(time -> {
 				IScene scene = controller.getScene();
 				
 				scene.remove3DObjects(remove);
-				
 				scene.add3DObjects(meshes);
+				cellsToUpdate.forEach(c -> c.update(scene));
+				clustersToUpdate.forEach(c -> c.update(scene));
+				 
+				mAntennas.getGeometry().modify((attributes, data) -> {
+					data[0] = Vec3.toArray(antennas);
+				});
 				
-				synchronized(cells){
-					cells.values().stream().forEach(cell -> {
-						if (cell.update(scene)) {
-							cell.getOccupationCube().setVisible(params.isShowing(cell.getType().represent()));
-						}
-					});
-				}
+				agentPoints.getGeometry().modify((attributes, data) -> {
+					data[0] = Vec3.toArray(agentPositions);
+				});
 				
-				if (mAntennas == null) 
-					scene.add3DObject((mAntennas = MeshUtilities.createLines(antennas, new LineMaterial(RGBA.RED).setWidth(0.5f))));
-				else 
-					mAntennas.getGeometry().modify((attributes, data) -> {
-						data[0] = Vec3.toArray(antennas);
-					});
-				
-				
-				if (agentPoints == null) 
-					scene.add3DObject((agentPoints = MeshUtilities.createPoints(agentPositions, RGBA.WHITE, 5, Queue.OVERLAY, Flag.DONT_CAST_SHADOW)));
-				else
-					agentPoints.getGeometry().modify((attributes, data) -> {
-						data[0] = Vec3.toArray(agentPositions);
-					});
-	
-				synchronized(trails){
-					trails.add(newestTrailStep);
-					while (trails.size() > params.getMaxTrailLength()){
-						scene.remove3DObject(trails.removeFirst());
-					}
-					scene.add3DObject(newestTrailStep);
-				}
+				scene.remove3DObjects(trailStepsToRemove);
+				scene.add3DObject(newestTrailStep);
 				
 				scene.add3DObjects(newCenterPoints);
 				
@@ -761,9 +750,11 @@ public class EmCity {
 	}
 	
 	private void updateStats() {
-		Display.getDefault().asyncExec(() -> {
-			pv.updateAgents(agents);
-			pv.updateClusters(generatedClusters);
+		controller.run(time -> {
+			Display.getDefault().asyncExec(() -> {
+				pv.updateAgents(agents);
+				pv.updateClusters(generatedClusters);
+			});
 		});
 	}
 

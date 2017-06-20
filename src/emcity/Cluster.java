@@ -1,10 +1,13 @@
 package emcity;
+import java.math.BigInteger;
+import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiFunction;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -16,6 +19,7 @@ import com.vividsolutions.jts.geom.Polygon;
 import com.vividsolutions.jts.geom.impl.CoordinateArraySequence;
 import com.vividsolutions.jts.operation.union.CascadedPolygonUnion;
 
+import ch.fhnw.ether.scene.IScene;
 import ch.fhnw.ether.scene.mesh.IMesh;
 import ch.fhnw.ether.scene.mesh.MeshUtilities;
 import ch.fhnw.ether.scene.mesh.material.ColorMaterial;
@@ -95,7 +99,10 @@ public class Cluster implements Typed, Colonizeable {
 	private int capacity, maxHeight = 0, occupation, luciID = 0;
 	private float maxAgentDistance = 0;
 	private int[] center = new int[2];
-	private IMesh disk;
+	private IMesh disk, occupationMesh;
+	private Consumer<IScene> update;
+	private List<IMesh> occupationCubes;
+	private SecureRandom random = new SecureRandom();
 
 	// TODO cluster_type = existing structure or extension
 	// TODO activity_type
@@ -104,6 +111,7 @@ public class Cluster implements Typed, Colonizeable {
 		this.type = type;
 		occupation = 0;
 		cells = new LinkedList<>();
+		occupationCubes = new ArrayList<>();
 	}
 	
 	public boolean is(TYPE t){
@@ -144,6 +152,45 @@ public class Cluster implements Typed, Colonizeable {
 		}
 		// for reloading typologies
 		colonize(occupation);
+	}
+	
+	public boolean needsUpdate(){
+		return update != null;
+	}
+	
+	public boolean update(IScene scene){
+		if (update != null) {
+			update.accept(scene);
+			update = null;
+			return true;
+		}
+		return false;
+	}
+	
+	public void addOccupationCube(IMesh cube){
+		synchronized(occupationCubes){
+			occupationCubes.add(cube);
+		}
+		if (update == null){
+			update = scene -> {
+				if (occupationMesh != null) occupationCubes.add(occupationMesh);
+				List<IMesh> merged = MeshUtilities.mergeMeshes(occupationCubes);
+//				String name = occupationCubes.stream().map(c -> c.getName()).collect(Collectors.joining());
+				String name = new BigInteger(130, random).toString(32);
+				occupationCubes.clear();
+				if (merged.size() == 1){
+					IMesh m = merged.get(0);
+					m.setName(name);
+					scene.remove3DObject(occupationMesh);
+					scene.add3DObject((occupationMesh = m));
+				}
+			};
+		}
+		
+	}
+	
+	public IMesh getOccupationMesh(){
+		return occupationMesh;
 	}
 	
 	/** set Attraction and clusterCapacity;

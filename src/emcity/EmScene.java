@@ -24,9 +24,10 @@ public class EmScene implements IScene {
 	@Override
 	public void add3DObject(I3DObject object) {
 		if(object == null) return;
-		/* contains test is performed in DefaultRenderManager
+		/* contains test is performed in DefaultRenderManager */
 		if (objects.contains(object))
-			throw new IllegalArgumentException("object already in scene: " + object); */
+			return;
+//			throw new IllegalArgumentException("object already in scene: " + object); 
 
 		IRenderManager rm = controller.getRenderManager();
 		if (object instanceof ILight)
@@ -39,7 +40,8 @@ public class EmScene implements IScene {
 	@Override
 	public void remove3DObject(I3DObject object) {
 		if (!objects.contains(object))
-			throw new IllegalArgumentException("object not in scene: " + object);
+//			throw new IllegalArgumentException("object not in scene: " + object);
+			return;
 
 		IRenderManager rm = controller.getRenderManager();
 		if (object instanceof ILight)
