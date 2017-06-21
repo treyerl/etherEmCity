@@ -750,11 +750,9 @@ public class EmCity {
 	}
 	
 	private void updateStats() {
-		controller.run(time -> {
-			Display.getDefault().asyncExec(() -> {
-				pv.updateAgents(agents);
-				pv.updateClusters(generatedClusters);
-			});
+		Display.getDefault().asyncExec(() -> {
+			pv.updateAgents(agents);
+			pv.updateClusters(generatedClusters);
 		});
 	}
 
