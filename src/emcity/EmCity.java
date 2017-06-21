@@ -750,9 +750,11 @@ public class EmCity {
 	}
 	
 	private void updateStats() {
+		List<Agent> agentList = new ArrayList<>(agents);
+		List<Cluster> clusterList = new ArrayList<>(generatedClusters);
 		Display.getDefault().asyncExec(() -> {
-			pv.updateAgents(agents);
-			pv.updateClusters(generatedClusters);
+			pv.updateAgents(agentList);
+			pv.updateClusters(clusterList);
 		});
 	}
 
