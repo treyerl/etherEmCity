@@ -197,7 +197,7 @@ public class Cluster implements Typed, Colonizeable {
 	 * 
 	 */
 	void init() {
-		this.capacity = 0;
+		occupation = capacity = 0;
 
 		int sum_x = 0;
 		int sum_y = 0;

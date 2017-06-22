@@ -214,6 +214,9 @@ class Agent extends Ple_Agent {
 	void step(boolean normalize, Cluster cl) {
 		// Update velocity
 		Vec3 vel = getVelocity().add(getAcceleration()).normalize().scale(getMaxSpeed());
+		if (normalize)
+			setVelocity(vel.normalize());
+		else setVelocity(vel);
 		counter++;
 		
 		// Test coming position
@@ -232,10 +235,8 @@ class Agent extends Ple_Agent {
 			} else collision(c);
 		} else collision(c);
 		
-		if (normalize)
-			setVelocity(vel.normalize());
-		else setVelocity(vel);
-
+		
+		// setting location after collision
 		setLocation(getLocation().add(getVelocity().scale(2)));
 		
 		// Reset acceleration to 0 each cycle
@@ -259,7 +260,7 @@ class Agent extends Ple_Agent {
 			return;
 		}
 		Vec3 reflection, newPos;
-		// derive the normal: since out cell is a square rectangle we check for 45° degree quarters
+		// derive the normal: since our cell is a square rectangle we check for 45° degree quarters
 		Vec3 dir = c.getPosition().subtract(getLocation());
 		Vec3 normal;
 		float x = dir.x, y = dir.y;

@@ -1,6 +1,5 @@
 package emcity.luci;
 
-import java.util.LinkedList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.function.Consumer;
@@ -34,6 +33,10 @@ public class EmCityLuciService extends LcRemoteService {
 	public void setEmCity(EmCity emc){
 		this.emc = emc;
 	}
+	
+	private void start(){
+		emc.start();
+	}
 
 	@Override
 	public String getDescription() {
@@ -52,13 +55,14 @@ public class EmCityLuciService extends LcRemoteService {
 			
 			@Override
 			public Message implementation(Message input) {
-				JSONObject h = input.getHeader();
-				System.out.println(h);
+//				JSONObject h = input.getHeader();
+//				System.out.println(h);
 				AttachmentAsArray a = (AttachmentAsArray) input.getAttachment(0);
 				
 				Reader r = new Reader();
 				final CountDownLatch cdl = new CountDownLatch(1);
 				final int[] numbers = new int[2];
+				
 				emc.getController().updateTypologies(r.lines(a.getByteBuffer()), (updatedClusters, deletedIDs) -> {
 					uploadClusters(updatedClusters, deletedIDs);
 					numbers[0] = updatedClusters.size();
@@ -102,6 +106,7 @@ public class EmCityLuciService extends LcRemoteService {
 		new Thread(em).start();
 		em.connect(asp.getHostname(), asp.getPort());
 		em.setEmCity((new EmCity(em)));
+		em.start();
     }
 	
 	public void createScenario(Consumer<Integer> onScenarioCreated){

@@ -451,7 +451,9 @@ public class EmCity {
 			
 			startSimulationThread();
 		});
-		
+	}
+	
+	public void start(){
 		Platform.get().run();
 	}
 	
@@ -703,10 +705,10 @@ public class EmCity {
 		newestTrailStep.setVisible(params.isShowingTrails());
 		
 		// agent positions
-		final List<Vec3> agentPositions = agents.stream()
+		final float[] agentPositions = Vec3.toArray(agents.stream()
 				.filter(agent -> ((Agent)agent).isActive())
 				.map(agent -> agent.getLocation())
-				.collect(Collectors.toList());
+				.collect(Collectors.toList()));
 		;
 		
 		// cluster center points
@@ -718,6 +720,7 @@ public class EmCity {
 		final List<Cell> cellsToUpdate = cells.values().stream().filter(c -> c.needsUpdate()).collect(Collectors.toList());
 		final List<Cluster> clustersToUpdate = clusters.stream().filter(c -> c.needsUpdate()).collect(Collectors.toList());
 		final List<IMesh> trailStepsToRemove = new LinkedList<>();
+		final float[] antennarray = Vec3.toArray(antennas);
 		trails.add(newestTrailStep);
 		while (trails.size() > params.getMaxTrailLength()){
 			trailStepsToRemove.add(trails.removeFirst());
@@ -731,13 +734,14 @@ public class EmCity {
 				scene.add3DObjects(meshes);
 				cellsToUpdate.forEach(c -> c.update(scene));
 				clustersToUpdate.forEach(c -> c.update(scene));
+//				System.out.println(remove.size()+" "+meshes.size()+" "+cellsToUpdate.size()+" "+clustersToUpdate.size());
 				 
 				mAntennas.getGeometry().modify((attributes, data) -> {
-					data[0] = Vec3.toArray(antennas);
+					data[0] = antennarray;
 				});
 				
 				agentPoints.getGeometry().modify((attributes, data) -> {
-					data[0] = Vec3.toArray(agentPositions);
+					data[0] = agentPositions;
 				});
 				
 				scene.remove3DObjects(trailStepsToRemove);
@@ -860,7 +864,7 @@ public class EmCity {
 	}
 	
 	public static void main(String args[]) {
-		new EmCity();
+		(new EmCity()).start();
 	}
 
 }
