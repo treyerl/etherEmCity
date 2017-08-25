@@ -26,8 +26,13 @@ public class MultiLineString {
 	/**Set the splines
 	 * @param lineStrings List&lt;LineString&gt;
 	 */
-	public void setLineStrings(List<LineStrip> lineStrings){
+	public MultiLineString setLineStrings(List<LineStrip> lineStrings){
 		this.lineStrings = lineStrings;
+		return this;
+	}
+	
+	public List<LineStrip> getLineStrings(){
+		return this.lineStrings;
 	}
 	
 	/**Draw the connecting straight lines between spline points.

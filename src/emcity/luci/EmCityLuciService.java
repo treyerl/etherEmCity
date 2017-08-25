@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.function.Consumer;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 import org.json.JSONArray;
@@ -15,6 +16,7 @@ import ch.fhnw.ether.scene.camera.ICamera;
 import ch.fhnw.util.math.Vec3;
 import emcity.Cluster;
 import emcity.EmCity;
+import emcity.MultiLineString;
 import emcity.Reader;
 import luci.connect.AttachmentAsArray;
 import luci.connect.JSON;
@@ -47,7 +49,7 @@ public class EmCityLuciService extends LcRemoteService {
 	protected ResponseHandler newResponseHandler() {
 		// TODO Auto-generated method stub
 		return new RemoteServiceResponseHandler() {
-			
+			Reader r = new Reader();
 			@Override
 			public void processResult(Message m) {
 //				System.out.println(m);
@@ -55,33 +57,53 @@ public class EmCityLuciService extends LcRemoteService {
 			
 			@Override
 			public Message implementation(Message input) {
-//				JSONObject h = input.getHeader();
-//				System.out.println(h);
-				AttachmentAsArray a = (AttachmentAsArray) input.getAttachment(0);
+				JSONObject h = input.getHeader();
 				
-				Reader r = new Reader();
 				final CountDownLatch cdl = new CountDownLatch(1);
 				final int[] numbers = new int[2];
+				JSONObject result = new JSONObject();
 				
-				emc.getController().updateTypologies(r.lines(a.getByteBuffer()), (updatedClusters, deletedIDs) -> {
-					uploadClusters(updatedClusters, deletedIDs);
-					numbers[0] = updatedClusters.size();
-					numbers[1] = deletedIDs.size();
-					cdl.countDown();
-				});
-				try {
-					cdl.await();
-					return new Message(new JSONObject().put("result", new JSONObject()
-							.put("updatedClusters", numbers[0])
-							.put("deletedClusters", numbers[1])));
-				} catch (InterruptedException e) {
-					e.printStackTrace();
-					return new Message(new JSONObject().put("error", e.getMessage()));
+				if (h.has("typology")){
+					AttachmentAsArray t = (AttachmentAsArray) h.get("typology");
+					emc.getController().updateTypologies(r.lines(t.getByteBuffer()), (updatedClusters, deletedIDs) -> {
+						uploadClusters(updatedClusters, deletedIDs);
+						numbers[0] = updatedClusters.size();
+						numbers[1] = deletedIDs.size();
+						cdl.countDown();
+					});
+					try {
+						cdl.await();
+						 result.put("updatedClusters", numbers[0]).put("deletedClusters", numbers[1]);
+					} catch (InterruptedException e) {
+						e.printStackTrace();
+						return new Message(new JSONObject().put("error", e.getMessage()));
+					}
 				}
-				
+				if (h.has("network")){
+					JSONObject network = h.getJSONObject("network");
+					JSONObject j = network.getJSONObject("streets");
+					AttachmentAsArray p = (AttachmentAsArray) j.get("points");
+					AttachmentAsArray l = (AttachmentAsArray) j.get("indices");
+					emc.getController().updateStreetNetwork(readIndexedPoints(a2l(p),a2l(l),false));
+					j = network.getJSONObject("parcels");
+					p = (AttachmentAsArray) j.get("points");
+					l = (AttachmentAsArray) j.get("indices");
+					emc.getController().updateParcels(readIndexedPoints(a2l(p),a2l(l),false));
+				}
+				return new Message(new JSONObject().put("result", result));
+			}
+			
+			public MultiLineString readIndexedPoints(Stream<String> pointLines, Stream<String> indexLines, boolean closed){
+				return new MultiLineString().setLineStrings(r.lineStrings(r.points(pointLines), indexLines, closed));
+			}
+			
+			private Stream<String> a2l(AttachmentAsArray a){
+				return r.lines(a.getByteBuffer());
 			}
 		};
 	}
+	
+	
 
 	@Override
 	protected JSONObject exampleCall() {
@@ -90,7 +112,11 @@ public class EmCityLuciService extends LcRemoteService {
 
 	@Override
 	protected JSONObject specifyInputs() {
-		return new JSONObject("{'run':'EmCity','OPT typology':'attachment'}");
+		return new JSONObject("{'run':'EmCity','OPT typology':'attachment',"
+				+ "'OPT network':{"
+				+ "		'streets':{'points':'attachment','indices':'attachment'},"
+				+ "		'parcels':{'points':'attachment','indices':'attachment'},"
+				+ "}}");
 	}
 
 	@Override

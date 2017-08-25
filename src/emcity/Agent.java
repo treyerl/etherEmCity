@@ -353,7 +353,7 @@ class Agent extends Ple_Agent {
 		}
 	}
 	
-	public void followPath(LineStrip linestring){
+	public void followPath(List<LineStrip> linestring){
 		// path following attraction
 		if (params.isFollowingPath()) {
 			Vec3 fLoc = futureLoc(6);

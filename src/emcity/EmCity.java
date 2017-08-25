@@ -80,7 +80,6 @@ import ch.fhnw.util.color.RGBA;
 import ch.fhnw.util.math.MathUtilities;
 import ch.fhnw.util.math.Vec2;
 import ch.fhnw.util.math.Vec3;
-import ch.fhnw.util.math.geometry.LineStrip;
 import emcity.luci.EmCityLuciService;
 
 public class EmCity {
@@ -287,9 +286,38 @@ public class EmCity {
 			});
 			
 		}
+		public void updateStreetNetwork(MultiLineString newNetwork){
+			step(()->{
+				final IMesh oldRoadMesh = roadsMesh;
+				roads = newNetwork;
+				roadsMesh = roads.getMesh(REPRESENTATION.ROADS);
+				run(time -> {
+					getScene().remove3DObject(oldRoadMesh);
+					allMeshes.remove(oldRoadMesh);
+					getScene().add3DObject(roadsMesh);
+					allMeshes.add(roadsMesh);
+				});
+			});
+		}
+		public void updateParcels(MultiLineString newParcels) {
+			step(()->{
+				final IMesh oldParcelsMesh = parcelsMesh;
+				parcels = newParcels;
+				parcelsMesh = parcels.getMesh(REPRESENTATION.ROADS);
+				run(time -> {
+					if (oldParcelsMesh != null){
+						getScene().remove3DObject(oldParcelsMesh);
+						allMeshes.remove(oldParcelsMesh);
+					}
+					getScene().add3DObject(parcelsMesh);
+					allMeshes.add(parcelsMesh);
+				});
+			});
+		}
 		public void moveOrigins() {
 			System.out.println("TODO: move origins");
 		}
+		
 	}
 	
 	public static enum REPRESENTATION {
@@ -375,10 +403,11 @@ public class EmCity {
 	private final List<Cluster> clusters, generatedClusters;
 	private final Map<Long, Cell> cells;
 	private final List<Runnable> tasks;
+	private IMesh roadsMesh, parcelsMesh;
 	
 	private Reader read;
-	private LineStrip linestring;
-	private MultiLineString buildings, roads;
+//	private LineStrip linestring;
+	private MultiLineString buildings, roads, parcels;
 	private int i = 0;
 	private Parameters params;
 	
@@ -533,7 +562,7 @@ public class EmCity {
 			read.cluster(read.lines("data/culture_clusters.txt"), cell_size_b, cells, clusters, TYPE.CULTURE);
 			read.cluster(read.lines("data/square_clusters.txt"), cell_size_park, cells, clusters, TYPE.SQUARE);
 			typologies.addAll(read.typologies(read.lines("data/typologies.txt")));
-			linestring = read.ghSpline(read.lines("data/path_following_line.txt"));
+//			linestring = read.ghSpline(read.lines("data/path_following_line.txt"));
 			buildings.setLineStrings(read.lineStrings(
 					read.points(read.lines("data/budovy_body.txt")), read.lines("data/budovy_zoznam.txt"), true));
 			roads.setLineStrings(read.lineStrings(
@@ -582,9 +611,9 @@ public class EmCity {
 		allMeshes.add(mesh);
 		
 		// roads
-		mesh = roads.getMesh(REPRESENTATION.ROADS);
-		scene.add3DObject(mesh);
-		allMeshes.add(mesh);
+		roadsMesh = roads.getMesh(REPRESENTATION.ROADS);
+		scene.add3DObject(roadsMesh);
+		allMeshes.add(roadsMesh);
 		
 		// clusters capacity meshes
 		List<IMesh> outlines = Cluster.createOutlines(clusters);
@@ -660,7 +689,7 @@ public class EmCity {
 			agent.stigmergy();
 			
 			// follow path; affecting acceleration
-			agent.followPath(linestring);
+			agent.followPath(roads.getLineStrings());
 
 			// doing the actual step
 			// this applies all the acceleration changes to the 

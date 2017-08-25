@@ -104,7 +104,7 @@ public class Reader{
 	 * @param pointStream Stream&lt;String&gt;
 	 * @return List&lt;Vec3D&gt;
 	 */
-	List<Vec3> points(Stream<String> pointStream){
+	public List<Vec3> points(Stream<String> pointStream){
 		List<Vec3> points = new LinkedList<>();
 		i = 0;
 		pointStream.forEachOrdered(c -> {
@@ -123,7 +123,7 @@ public class Reader{
 	 * @param close boolean that indicates whether the splines should be closed
 	 * @return List&lt;Spline3D&gt;
 	 */
-	List<LineStrip> lineStrings(List<Vec3> points, Stream<String> indexStream, boolean close){
+	public List<LineStrip> lineStrings(List<Vec3> points, Stream<String> indexStream, boolean close){
 		System.out.println(points.size());
 		Iterator<Vec3> pit = points.iterator();
 		i = 0;
